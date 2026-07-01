@@ -4,6 +4,8 @@
 
 import math
 import os
+del os.environ['PROJ_LIB']
+import pyproj
 import json
 import scipy.stats
 import struct, time
@@ -16,8 +18,10 @@ import string
 import numpy as np
 from scipy.ndimage.measurements import label
 from pathlib import Path
+import rioxarray
 import rasterio
 from rasterio.features import shapes
+from rasterio.warp import reproject, Resampling
 import xarray
 import xrspatial
 import richdem as rd
@@ -26,6 +30,7 @@ from shapely.geometry import box, mapping
 from rasterstats import zonal_stats
 from colorama import Fore
 from math import ceil
+from osgeo import osr
 
 
 # import warnings
@@ -369,6 +374,8 @@ rotor_diammeter, turbine_nameplate_capacity = int(ControlAnalysisInputs.WindTurb
 gdf_CountryBoundaries=gpd.read_file(InputSpatialDatasetsFolder+FileName_CountryBoundaries+".shp")
 SubfolderCountryMapsForClipping=HomeDirectory+r"\RegionBoundaryMaps"
 
+
+
 pd_LogFile=pd.DataFrame()
 for CountryCounter in range(0,len(AllCountries)):#country wise loop
     RegionName_withSpaces=AllCountries.Ct[CountryCounter]
@@ -427,6 +434,7 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                 ClippedRaster = ClippedRaster.rio.clip(gdf_SingleCountry.geometry) #clip to country boundaries
                 ClippedRaster.rio.to_raster("%s%s_%s_clipped.tif" % (SubfolderStage1_Clipping, RE_Technology, Raster))
                 ProjectedRaster=ClippedRaster.rio.reproject("ESRI:54009") #we project all rasters to crs measurable in meters as we will deal with meter based thresholds in contrast to degree based
+                #ProjectedRaster = ClippedRaster
                 ProjectedRaster.rio.to_raster("%s%s_%s_projected.tif" % (SubfolderStage1_Clipping, RE_Technology, Raster))
                 print("clipped and projected to ESRI:54009 %s raster dataset" % Raster)
             del(ClippedRaster, ProjectedRaster) #to save memory
@@ -455,6 +463,7 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                     if Vector in [FileName_ProtectedAreas,FileName_WaterBodies]:
                         gdf_ClippedVector["RasterValue"] = 0
                 gdf_ClippedVector=gdf_ClippedVector.to_crs('EPSG:4326')  # All CRS projections must be ensured to have same crs before rasterizing
+                #print(gdf_ClippedVector[gdf_ClippedVector.geometry.type=="Point"])
                 gdf_ClippedVector.to_file("%s%s_%s_clipped.shp"%(SubfolderStage1_Clipping,RE_Technology,Vector))
                 print("clipped %s vector dataset" % Vector)
                 Rasterized_ClippedVector=make_geocube(gdf_ClippedVector,measurements=["RasterValue"],resolution=(0.0025, -0.0025), geom=ClipGeometry).fillna(0)#highest resolution belongs to resource raster. resolution must be in degrees as the vector has same WGS84 degree based CRS.
