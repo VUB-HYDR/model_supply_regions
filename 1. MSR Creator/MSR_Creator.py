@@ -1,55 +1,64 @@
-#BE SURE TO INSTALL THESE LIBRARIES ON THE SERVER / COMPUTER BEFORE ATTEMPTING TO RUN THE CODE
+# BE SURE TO INSTALL THESE LIBRARIES ON THE SERVER / COMPUTER BEFORE ATTEMPTING TO RUN THE CODE
 
 # import relevant libraries
 
+import json
 import math
 import os
-# del os.environ['PROJ_LIB']
-import pyproj
-import json
-import scipy.stats
-import struct, time
-from shapely.geometry import LineString, MultiPolygon
-from shapely.ops import split
-import pandas as pd
-import geopandas as gpd
 import shutil
 import string
-import numpy as np
-from scipy.ndimage.measurements import label
+import struct
+import time
+from math import ceil
 from pathlib import Path
-import rioxarray
+
+# del os.environ['PROJ_LIB']
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+import pyproj
 import rasterio
-from rasterio.features import shapes
-from rasterio.warp import reproject, Resampling
+import richdem as rd
+import rioxarray
+import scipy.stats
 import xarray
 import xrspatial
-import richdem as rd
-from geocube.api.core import make_geocube
-from shapely.geometry import box, mapping
-from rasterstats import zonal_stats
 from colorama import Fore
-from math import ceil
+from geocube.api.core import make_geocube
 from osgeo import osr
+from rasterio.features import shapes
+from rasterio.warp import reproject, Resampling
+from rasterstats import zonal_stats
+from scipy.ndimage.measurements import label
+from shapely.geometry import box, mapping
+from shapely.geometry import LineString, MultiPolygon
+from shapely.ops import split
 
 
 # import warnings
 # warnings.filterwarnings("ignore")
 
+
 def quadrat_cut_geometry(geometry, quadrat_width):
-    #Code adopted from OSMNX with alterations:https://osmnx.readthedocs.io/en/stable/index.html
+    # Code adopted from OSMNX with alterations:
+    # https://osmnx.readthedocs.io/en/stable/index.html
 
     # create n evenly spaced points between the min and max x and y bounds
     west, south, east, north = geometry.bounds
     x_num = math.floor((east - west) / quadrat_width) + 1
     y_num = math.floor((north - south) / quadrat_width) + 1
-    x_points = np.linspace(west, east, num=2+x_num)
-    y_points = np.linspace(south, north, num=2+y_num)
-
+    x_points = np.linspace(west, east, num=2 + x_num)
+    y_points = np.linspace(south, north, num=2 + y_num)
 
     # create a quadrat grid of lines at each of the evenly spaced points
-    vertical_lines = [LineString([(x, y_points[0]), (x, y_points[-1])]) for x in x_points]
-    horizont_lines = [LineString([(x_points[0], y), (x_points[-1], y)]) for y in y_points]
+    vertical_lines = [
+        LineString([(x, y_points[0]), (x, y_points[-1])])
+        for x in x_points
+    ]
+    horizont_lines = [
+        LineString([(x_points[0], y), (x_points[-1], y)])
+        for y in y_points
+    ]
     lines = vertical_lines + horizont_lines
 
     # recursively split the geometry by each quadrat line
@@ -57,6 +66,7 @@ def quadrat_cut_geometry(geometry, quadrat_width):
         geometry = MultiPolygon(split(geometry, line))
 
     return geometry
+
 
 def polygonize_resource_potential(
     resource_potential_raster_path,
@@ -67,6 +77,8 @@ def polygonize_resource_potential(
     max_area_to_cap_msrs_km2,
     min_contiguous_area_suitable_for_msr_km2,
 ):
+    polygonization_folder = Path(polygonization_folder)
+
     # Open the Competitive resource raster for polygonization
     resource_potential_raster = xarray.open_dataarray(resource_potential_raster_path)
     resource_potential_raster = resource_potential_raster.squeeze("band")
@@ -80,18 +92,15 @@ def polygonize_resource_potential(
     for resource_band in range(1, band_count_for_multi_resolve_algorithm + 1):
         resolved_raster_path = (
             polygonization_folder
-            + re_technology
-            + 'ResourceBand%s_resolve.tif' % resource_band
+            / f"{re_technology}ResourceBand{resource_band}_resolve.tif"
         )
         single_band_initial_msrs_path = (
             polygonization_folder
-            + re_technology
-            + 'ResourceBand%s_InitialMSRs.shp' % resource_band
+            / f"{re_technology}ResourceBand{resource_band}_InitialMSRs.shp"
         )
         single_band_final_msrs_path = (
             polygonization_folder
-            + re_technology
-            + 'ResourceBand%s_FinalMSRs.shp' % resource_band
+            / f"{re_technology}ResourceBand{resource_band}_FinalMSRs.shp"
         )
 
         resource_band_upper_limit = resource_threshold + resource_band * (
@@ -103,8 +112,10 @@ def polygonize_resource_potential(
             / band_count_for_multi_resolve_algorithm
         )
 
-        print("Creating MSRs for band %s : %s to %s " % (
-            resource_band, resource_band_lower_limit, resource_band_upper_limit))
+        print(
+            f"Creating MSRs for band {resource_band} : "
+            f"{resource_band_lower_limit} to {resource_band_upper_limit} "
+        )
 
         subset_resource_potential_raster = resource_potential_raster * 1
         subset_resource_potential_raster = subset_resource_potential_raster.where(
@@ -115,7 +126,7 @@ def polygonize_resource_potential(
             ~(subset_resource_potential_raster > 0), 1)
         resolved_raster.rio.to_raster(resolved_raster_path)
 
-        # below command converts contigious raster pixels to polygon geometries. Transform is crucial input to provide, otherwise the geometries will assume single pixel size as 1 meter
+        # Transform is needed so polygonized geometries use the raster pixel size.
         initial_polygons = shapes(
             resolved_raster.data.astype('float32'),
             mask=resolved_raster.data == 1,
@@ -132,7 +143,7 @@ def polygonize_resource_potential(
             initial_polygons, crs="ESRI:54009")
 
         if not initial_polygons.empty:
-            if initial_polygons.explode(ignore_index=True).index.nlevels>1: # explod function allows removal of any invalid polygons. It automatically introduces additional index in pada frame. If no invalid polygons found, we dont need to run this command.
+            if initial_polygons.explode(ignore_index=True).index.nlevels > 1:
                 initial_polygons = initial_polygons.explode(
                     ignore_index=True).droplevel(1).reset_index(drop=True)
             initial_polygons = initial_polygons.drop(columns=['raster_val'])
@@ -155,7 +166,10 @@ def polygonize_resource_potential(
 
                 if len(single_band_to_be_capped) > 0:
                     for i in range(0, len(single_band_to_be_capped)):
-                        print("dividing polygon %s/%s" % (i + 1, len(single_band_to_be_capped)))
+                        print(
+                            f"dividing polygon {i + 1}/"
+                            f"{len(single_band_to_be_capped)}"
+                        )
                         single_polygon_parts = gpd.GeoDataFrame(
                             crs=single_band_to_be_capped.crs,
                             geometry=list(
@@ -175,7 +189,7 @@ def polygonize_resource_potential(
                                 single_band_final.area
                                 >= min_contiguous_area_suitable_for_msr_km2
                                 * 1000000
-                            ] # To get rid of any small geometries introduced by the above union operation
+                            ]
                 single_band_final[
                     single_band_final.area
                     >= min_contiguous_area_suitable_for_msr_km2 * 1000000
@@ -199,14 +213,15 @@ def polygonize_resource_potential(
         multi_band['FID'] = multi_band.index
         return multi_band
     except:
-        print(Fore.RED+"******MSRs not developed*******")
+        print(f"{Fore.RED}******MSRs not developed*******")
         return 0
 
 
 def minimum_distance_of_msr_centroid_from_geometry_set(
     msr_centroid,
     geometry_set,
-): #Geometry can be point, line or polygon or mixed
+):
+    # Geometry can be point, line, polygon, or mixed.
     return geometry_set.distance(msr_centroid).min()
 
 
@@ -214,17 +229,28 @@ def compute_load_center_attributes_for_msr_centroid(
     msr_centroid,
     load_centers,
 ):
-    load_center_distances = load_centers.geometry.distance(msr_centroid)/1000
+    load_center_distances = load_centers.geometry.distance(msr_centroid) / 1000
     best_distance = load_center_distances.min()
 
-    closest_city_name = load_centers.name_conve[load_center_distances==best_distance].iloc[0]
-    closest_city_population_count = load_centers.max_pop_al[load_center_distances==best_distance].iloc[0]
+    closest_city_name = load_centers.name_conve[
+        load_center_distances == best_distance
+    ].iloc[0]
+    closest_city_population_count = load_centers.max_pop_al[
+        load_center_distances == best_distance
+    ].iloc[0]
     pop_within_100km = load_centers.max_pop_al[load_center_distances < 100].sum()
     city_count_within_100km = len(load_center_distances[load_center_distances < 100])
 
     if city_count_within_100km <= 10:
-        cities_100km = np.array2string(load_centers.name_conve[load_center_distances < 100].values, separator=",").strip(
-            '[]').replace("'", "").replace(",", ", ")
+        cities_100km = (
+            np.array2string(
+                load_centers.name_conve[load_center_distances < 100].values,
+                separator=",",
+            )
+            .strip("[]")
+            .replace("'", "")
+            .replace(",", ", ")
+        )
     else:
         cities_100km = "Above 10 cities"
 
@@ -235,6 +261,7 @@ def compute_load_center_attributes_for_msr_centroid(
         city_count_within_100km,
         cities_100km,
     )
+
 
 def run_resource_sufficiency_stage(
     suitable_area_resource_raster_path,
@@ -249,15 +276,12 @@ def run_resource_sufficiency_stage(
     country_area_km2,
 ):
 
-
-    #Resource sufficiency check script
-
-    #Reduce cutoff threshold for resource lagging countries until we reach 0 or at yield that meets sufficiency criteria
+    # Reduce cutoff threshold for resource-lagging countries until sufficiency.
     suitable_area_resource_raster = xarray.open_dataarray(
         suitable_area_resource_raster_path)
     suitable_area_resource_raster = suitable_area_resource_raster.squeeze("band")
 
-    raster_pixel_size_m = abs(suitable_area_resource_raster.affine[0]) #Raster should be in meter measured Coordiante Reference System (CRS)
+    raster_pixel_size_m = abs(suitable_area_resource_raster.affine[0])
     min_contiguous_pixels_to_retain = ceil(
         default_min_contiguous_area_suitable_for_msr_km2
         * 1000000
@@ -266,19 +290,28 @@ def run_resource_sufficiency_stage(
 
     suitable_area_resource_values = suitable_area_resource_raster.to_numpy()
     resource_threshold = user_resource_threshold
-    cutoff_normalized=1
+    cutoff_normalized = 1
 
-    wind_land_classes = np.arange(0, 12.5,0.5)  # Land clusters in m/s [ 0.5,  1. ,  1.5,  2. ,  2.5,  3. ...12.], count=25,actual bins are 24 [0-0.5),[0.5-1)...[11.5-12]
-    wind_production_percentage_per_land_class = np.array([0, 0, 0, 0, 0, 1, 3, 6, 9, 13, 18, 24, 30, 37,43, 48, 54, 58, 61, 64, 65, 66, 66, 65],
-                                                         dtype=int)  # % of Nameplate production (Nameplate capacity KW*8760) per 24 land clusters/bins in range[0,12 m/s] at 0.5 step as per IRENA-KTH study:https://www.irena.org/-/media/Files/IRENA/Agency/Publication/2014/IRENA_Africa_Resource_Potential_Aug2014.pdf
+    wind_land_classes = np.arange(0, 12.5, 0.5)
+    wind_production_percentage_per_land_class = np.array(
+        [0, 0, 0, 0, 0, 1, 3, 6, 9, 13, 18, 24, 30, 37, 43, 48, 54,
+         58, 61, 64, 65, 66, 66, 65],
+        dtype=int,
+    )
 
-    csp_land_classes = np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],dtype=int)  # Land clusters in kWh/m2-day , count=18,actual bins are 17
-    csp_production_percentage_per_land_class = np.array([0.00, 7.84, 21.40, 31.01, 38.47, 44.57, 49.72, 54.19, 58.12, 61.65, 64.83, 67.74, 70.42, 72.90,
-                                                75.20, 77.36, 79.39, 81.30, ],dtype=float)  # % of Nameplate production (Nameplate capacity KW*8760) per 17 land bins as per IRENA-LBNL study:https://www.irena.org/publications/2015/Oct/Renewable-Energy-Zones-for-the-Africa-Clean-Energy-Corridor
+    csp_land_classes = np.array(
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+         17, 18],
+        dtype=int,
+    )
+    csp_production_percentage_per_land_class = np.array(
+        [0.00, 7.84, 21.40, 31.01, 38.47, 44.57, 49.72, 54.19, 58.12,
+         61.65, 64.83, 67.74, 70.42, 72.90, 75.20, 77.36, 79.39, 81.30],
+        dtype=float,
+    )
 
-    break_while_loop =0
-    #this while loop repeats until sufficiency or lower resource limit reaches.
-    while (break_while_loop == 0 and resource_threshold>=resource_lower_limit):
+    break_while_loop = 0
+    while break_while_loop == 0 and resource_threshold >= resource_lower_limit:
         # subset resource raster as per resource cutofff
         suitable_area_resource_values_filtered = np.where(
             suitable_area_resource_values < resource_threshold, 0,
@@ -288,7 +321,8 @@ def run_resource_sufficiency_stage(
         # count no of pixels included per feature. This array is different dimension
         feature_pixel_count = np.bincount(feat[feat >= 0])
         # exclude features below the minimum area threshold
-        desired_features_to_retain = np.where(feature_pixel_count > min_contiguous_pixels_to_retain)
+        desired_features_to_retain = np.where(
+            feature_pixel_count > min_contiguous_pixels_to_retain)
         # initialize new array of same shape as the filtered resource raster, fill it with original pixel values feature by feature, considering only the retained features.
         suitable_area_resource_without_small_contiguous_regions = np.zeros_like(
             suitable_area_resource_values_filtered)
@@ -298,55 +332,103 @@ def run_resource_sufficiency_stage(
                     feat == f,
                     suitable_area_resource_values_filtered,
                     suitable_area_resource_without_small_contiguous_regions)
-        print("Retained features in total= %s" % len(desired_features_to_retain[0]))
+        print(f"Retained features in total= {len(desired_features_to_retain[0])}")
         suitable_area_resource_without_small_contiguous_regions[
             np.isnan(suitable_area_resource_without_small_contiguous_regions)
         ] = 0
 
-        # get solarpv, Wind, solar csp yields and compare with user provided requirement
         if re_technology == 'solarpv':
-            indicative_yield_gwh = suitable_area_resource_without_small_contiguous_regions.sum() *raster_pixel_size_m*raster_pixel_size_m* (365 / 1000000) * (0.16 / 5) * land_discount  #  10e6 for convertion to GWh annual yield, using 16% solar PV conversion efficiency and 20% spacing factor as per KTH report
+            indicative_yield_gwh = (
+                suitable_area_resource_without_small_contiguous_regions.sum()
+                * raster_pixel_size_m
+                * raster_pixel_size_m
+                * (365 / 1000000)
+                * (0.16 / 5)
+                * land_discount
+            )
 
         if re_technology == 'solarcsp':
-            #area in kM2
-            area_per_spatial_cluster=np.histogram(suitable_area_resource_without_small_contiguous_regions, bins=csp_land_classes)[0] *raster_pixel_size_m*raster_pixel_size_m/1000000
-            #Deployable max MWs per spatial cluster assuming LandDiscount
-            csp_max_capacity_per_spatial_cluster = csp_footprint_mw_per_km2* area_per_spatial_cluster*land_discount
-            #Get CSP yield in GWh
-            indicative_yield_gwh=(csp_max_capacity_per_spatial_cluster*8760*csp_production_percentage_per_land_class/100).sum()/1000
+            area_per_spatial_cluster = (
+                np.histogram(
+                    suitable_area_resource_without_small_contiguous_regions,
+                    bins=csp_land_classes,
+                )[0]
+                * raster_pixel_size_m
+                * raster_pixel_size_m
+                / 1000000
+            )
+            csp_max_capacity_per_spatial_cluster = (
+                csp_footprint_mw_per_km2
+                * area_per_spatial_cluster
+                * land_discount
+            )
+            indicative_yield_gwh = (
+                csp_max_capacity_per_spatial_cluster
+                * 8760
+                * csp_production_percentage_per_land_class
+                / 100
+            ).sum() / 1000
 
         if re_technology == 'wind':
-            #area in kM2
-            area_per_spatial_cluster=np.histogram(suitable_area_resource_without_small_contiguous_regions, bins=wind_land_classes)[0]*raster_pixel_size_m*raster_pixel_size_m/1000000
-            #Deployable max MWs per spatial cluster assuming LandDiscount
-            wind_max_capacity_per_spatial_cluster = np.round(area_per_spatial_cluster / (5 * wind_rotor_diameter_meters * 3 * wind_rotor_diameter_meters / 1000000),0)*(wind_single_turbine_capacity_watts / 1e6)*land_discount
-            #Get Wind yield in GWh
-            indicative_yield_gwh=(wind_max_capacity_per_spatial_cluster*8760*wind_production_percentage_per_land_class/100).sum()/1000
-            #print("Area_perSpatialCluster= %s"%Area_perSpatialCluster)
-            #print("Wind Land Bins= %s" % WindLandClasses)
-            #print("WindMaxCapacity_perSpatialCluster= %s" % WindMaxCapacity_perSpatialCluster)
-            #print("production efficiency per Spatial Cluster=%s"%(WindProductionPercentage_perLandClass/100))
-            #print("Max production per Spatial Cluster=%s" % (WindMaxCapacity_perSpatialCluster*8760/1000))
-            #print("Actual production per Spatial Cluster=%s" % (WindMaxCapacity_perSpatialCluster * 8760*WindProductionPercentage_perLandClass / 100000))
-            # mean annual wind speed across all pixels per bin (optional)
-            #SpatialAverage_ofAnnualMeanWindSpeed_perSpatialCluster = scipy.stats.binned_statistic(np_SuitableAreaResourceRaster_resolved,
-            #							 np_SuitableAreaResourceRaster_resolved, statistic='mean',bins=WindLandClasses)[0]
-            #print("SpatialAverage_ofAnnualMeanWindSpeed_perSpatialCluster= %s" % SpatialAverage_ofAnnualMeanWindSpeed_perSpatialCluster)
+            area_per_spatial_cluster = (
+                np.histogram(
+                    suitable_area_resource_without_small_contiguous_regions,
+                    bins=wind_land_classes,
+                )[0]
+                * raster_pixel_size_m
+                * raster_pixel_size_m
+                / 1000000
+            )
+            wind_max_capacity_per_spatial_cluster = (
+                np.round(
+                    area_per_spatial_cluster
+                    / (
+                        5
+                        * wind_rotor_diameter_meters
+                        * 3
+                        * wind_rotor_diameter_meters
+                        / 1000000
+                    ),
+                    0,
+                )
+                * (wind_single_turbine_capacity_watts / 1e6)
+                * land_discount
+            )
+            indicative_yield_gwh = (
+                wind_max_capacity_per_spatial_cluster
+                * 8760
+                * wind_production_percentage_per_land_class
+                / 100
+            ).sum() / 1000
+        print(
+            f"Indicative {re_technology} Yield is {indicative_yield_gwh} GWH "
+            f"at resource threshold of {resource_threshold} KWh/m2-d and "
+            f"cutoff of {cutoff_normalized}"
+        )
 
-
-        print("Indicative %s Yield is %s GWH at resource threshold of %s KWh/m2-d and cutoff of %s" % (re_technology,indicative_yield_gwh,  resource_threshold,cutoff_normalized))
-
-        sufficiency_parameter=np.count_nonzero(suitable_area_resource_without_small_contiguous_regions)*raster_pixel_size_m*raster_pixel_size_m/1000000
-        sufficiency_condition=country_area_km2*0.05
+        sufficiency_parameter = (
+            np.count_nonzero(suitable_area_resource_without_small_contiguous_regions)
+            * raster_pixel_size_m
+            * raster_pixel_size_m
+            / 1000000
+        )
+        sufficiency_condition = country_area_km2 * 0.05
 
         if sufficiency_parameter > sufficiency_condition:
             break_while_loop = 1
         else:
             resource_threshold = resource_threshold - 0.01
-            if resource_threshold>=resource_lower_limit:
-                cutoff_normalized = (resource_threshold- resource_lower_limit)/(user_resource_threshold - resource_lower_limit)
+            if resource_threshold >= resource_lower_limit:
+                cutoff_normalized = (
+                    (resource_threshold - resource_lower_limit)
+                    / (user_resource_threshold - resource_lower_limit)
+                )
 
     return resource_threshold, indicative_yield_gwh
+
+
+def control_subpath(value):
+    return Path(str(value).strip("/\\"))
 
 
 '''
@@ -367,59 +449,110 @@ CONFIGURATIONS_SHEET = "configurations"
 PATHS_SHEET = "paths"
 ANALYSIS_INPUTS_SHEET = "analysis_inputs"
 
-#Read control input file
-control_dataset_names=pd.read_excel(CONTROL_FILE_NAME, sheet_name=INPUT_DATASET_SHEET, index_col=0)
-control_country_wise_inputs=pd.read_excel(CONTROL_FILE_NAME, sheet_name=COUNTRY_WISE_INPUTS_SHEET, index_col=0)
-control_configurations=pd.read_excel(CONTROL_FILE_NAME, sheet_name=CONFIGURATIONS_SHEET, index_col=0)
-control_paths=pd.read_excel(CONTROL_FILE_NAME, sheet_name=PATHS_SHEET, index_col=0)
-control_analysis_inputs=pd.read_excel(CONTROL_FILE_NAME, sheet_name=ANALYSIS_INPUTS_SHEET, index_col=0).transpose().drop(index='comments')
+# Read control input file
+control_dataset_names = pd.read_excel(
+    CONTROL_FILE_NAME,
+    sheet_name=INPUT_DATASET_SHEET,
+    index_col=0,
+)
+control_country_wise_inputs = pd.read_excel(
+    CONTROL_FILE_NAME,
+    sheet_name=COUNTRY_WISE_INPUTS_SHEET,
+    index_col=0,
+)
+control_configurations = pd.read_excel(
+    CONTROL_FILE_NAME,
+    sheet_name=CONFIGURATIONS_SHEET,
+    index_col=0,
+)
+control_paths = pd.read_excel(
+    CONTROL_FILE_NAME,
+    sheet_name=PATHS_SHEET,
+    index_col=0,
+)
+control_analysis_inputs = (
+    pd.read_excel(
+        CONTROL_FILE_NAME,
+        sheet_name=ANALYSIS_INPUTS_SHEET,
+        index_col=0,
+    )
+    .transpose()
+    .drop(index='comments')
+)
 
-home_directory=str(control_paths.loc["home_directory"][0])
-input_spatial_datasets_folder = str(control_paths.loc["folder_address_input_spatial_datasets"][0])
+home_directory = Path(str(control_paths.loc["home_directory"][0]))
+input_spatial_datasets_folder = Path(
+    str(control_paths.loc["folder_address_input_spatial_datasets"][0])
+)
 
-#Fetch run configuration
-all_countries=pd.read_csv(
+# Fetch run configuration
+all_countries = pd.read_csv(
     control_paths.loc["file_address_country_names_list"][0],
     names=["ct"],
 )
 re_technology = control_configurations.loc["re_technology"][0]
 road_type = control_configurations.loc["road_type"][0]
-relax_thresholds_for_resource_lagging_countries = control_configurations.loc["relax_thresholds_for_resource_lagging_countries"][0]
+relax_thresholds_for_resource_lagging_countries = control_configurations.loc[
+    "relax_thresholds_for_resource_lagging_countries"
+][0]
 roads_buffered_search = control_configurations.loc["roads_buffered_search"][0]
 grid_buffered_search = control_configurations.loc["grid_buffered_search"][0]
-band_count_for_multi_resolve_algorithm = control_configurations.loc["band_count_for_multi_resolve_algorithm"][0]
-default_min_capacity_suitable_to_create_msr_mw= control_configurations.loc["default_min_capacity_suitable_to_create_msr_mw"][0]
-run_status_of_process_scripts=[control_configurations.loc["perform_stage_1_clipping_multi_country_datasets_prepare_distance_surfaces_scoring_all_data_layers"][0],
-                          control_configurations.loc["perform_stage_2_get_resource_potential_with_or_without_resource_sufficiency_check_stage_3"][0],
-                          control_configurations.loc["perform_stage_4_part_i_polygonization"][0],
-                          control_configurations.loc["perform_stage_4_part_ii_attribution_msr_capacity_area_distance_to_grid_road_and_others"][0]]
-scripts=[]
+band_count_for_multi_resolve_algorithm = control_configurations.loc[
+    "band_count_for_multi_resolve_algorithm"
+][0]
+default_min_capacity_suitable_to_create_msr_mw = control_configurations.loc[
+    "default_min_capacity_suitable_to_create_msr_mw"
+][0]
+run_status_of_process_scripts = [
+    control_configurations.loc[
+        "perform_stage_1_clipping_multi_country_datasets_prepare_distance_surfaces_scoring_all_data_layers"
+    ][0],
+    control_configurations.loc[
+        "perform_stage_2_get_resource_potential_with_or_without_resource_sufficiency_check_stage_3"
+    ][0],
+    control_configurations.loc["perform_stage_4_part_i_polygonization"][0],
+    control_configurations.loc[
+        "perform_stage_4_part_ii_attribution_msr_capacity_area_distance_to_grid_road_and_others"
+    ][0],
+]
+scripts = []
 for i in range(1, 5):
-    if not run_status_of_process_scripts[i-1]==0:
+    if not run_status_of_process_scripts[i - 1] == 0:
         scripts.append(i)
 
 
-#assign file names
-file_name_population_density=control_dataset_names.loc["file_name_population_density"][0]
-file_name_land_cover=control_dataset_names.loc["file_name_land_cover"][0]
-file_name_elevation=control_dataset_names.loc["file_name_elevation"][0]
+# Assign file names
+file_name_population_density = control_dataset_names.loc[
+    "file_name_population_density"
+][0]
+file_name_land_cover = control_dataset_names.loc["file_name_land_cover"][0]
+file_name_elevation = control_dataset_names.loc["file_name_elevation"][0]
 file_name_protected_areas = control_dataset_names.loc["file_name_protected_areas"][0]
 file_name_substations = control_dataset_names.loc["file_name_substations"][0]
-file_name_urban_area_load_centers=control_dataset_names.loc["file_name_urban_area_load_centers"][0]
+file_name_urban_area_load_centers = control_dataset_names.loc[
+    "file_name_urban_area_load_centers"
+][0]
 file_name_roads = control_dataset_names.loc["file_name_roads"][0]
-file_name_power_grid=control_dataset_names.loc["file_name_power_grid"][0]
-file_name_transmission_grid=control_dataset_names.loc["file_name_transmission_grid"][0]
-file_name_continent_distance_surface_tgrid=control_dataset_names.loc["file_name_continent_distance_surface_tgrid"][0]
-file_name_distribution_grid=control_dataset_names.loc["file_name_distribution_grid"][0]
-file_name_country_boundaries=control_dataset_names.loc["file_name_country_boundaries"][0]
-file_name_ghi_map=control_dataset_names.loc["file_name_ghi_map"][0]
+file_name_power_grid = control_dataset_names.loc["file_name_power_grid"][0]
+file_name_transmission_grid = control_dataset_names.loc[
+    "file_name_transmission_grid"
+][0]
+file_name_continent_distance_surface_tgrid = control_dataset_names.loc[
+    "file_name_continent_distance_surface_tgrid"
+][0]
+file_name_distribution_grid = control_dataset_names.loc[
+    "file_name_distribution_grid"
+][0]
+file_name_country_boundaries = control_dataset_names.loc[
+    "file_name_country_boundaries"
+][0]
+file_name_ghi_map = control_dataset_names.loc["file_name_ghi_map"][0]
 file_name_dni_map = control_dataset_names.loc["file_name_dni_map"][0]
-file_name_wind_speed_map=control_dataset_names.loc["file_name_wind_speed_map"][0]
-file_name_water_bodies=control_dataset_names.loc["file_name_water_bodies"][0]
+file_name_wind_speed_map = control_dataset_names.loc["file_name_wind_speed_map"][0]
+file_name_water_bodies = control_dataset_names.loc["file_name_water_bodies"][0]
 
 
-
-#assign RE tech related inputs
+# Assign RE tech related inputs
 
 pv_slope_threshold = [int(control_analysis_inputs.pv_slope_threshold)]
 csp_slope_threshold = [int(control_analysis_inputs.csp_slope_threshold)]
@@ -437,16 +570,24 @@ wind_threshold = [
     float(control_analysis_inputs.wind_speed_lower_limit),
     float(control_analysis_inputs.wind_speed_threshold),
 ]
-land_discount_pv = float(int(control_analysis_inputs.solar_pv_land_discount_factor) / 100)
-land_discount_csp = float(int(control_analysis_inputs.solar_csp_land_discount_factor) / 100)
-land_discount_wind = float(int(control_analysis_inputs.wind_land_discount_factor) / 100)
+land_discount_pv = float(
+    int(control_analysis_inputs.solar_pv_land_discount_factor) / 100
+)
+land_discount_csp = float(
+    int(control_analysis_inputs.solar_csp_land_discount_factor) / 100
+)
+land_discount_wind = float(
+    int(control_analysis_inputs.wind_land_discount_factor) / 100
+)
 max_msr_capacity = int(control_analysis_inputs.msr_max_capacity_allowed)
 
 if re_technology == 'solar_pv':
     resource_raster_name = file_name_ghi_map
     land_discount = land_discount_pv
     slope_threshold = pv_slope_threshold
-    re_spatial_footprint_mw_per_km2 = int(control_analysis_inputs.pv_footprint_mw_per_km2)
+    re_spatial_footprint_mw_per_km2 = int(
+        control_analysis_inputs.pv_footprint_mw_per_km2
+    )
     resource_lower_limit = ghi_thresholds[0]
     user_resource_threshold = ghi_thresholds[1]
     run_info_column_headers = ['resource_threshold_kwh_per_m2_day', 'yield_gwh']
@@ -454,7 +595,9 @@ if re_technology == 'solar_csp':
     resource_raster_name = file_name_dni_map
     land_discount = land_discount_csp
     slope_threshold = csp_slope_threshold
-    re_spatial_footprint_mw_per_km2 = int(control_analysis_inputs.csp_footprint_mw_per_km2)
+    re_spatial_footprint_mw_per_km2 = int(
+        control_analysis_inputs.csp_footprint_mw_per_km2
+    )
     resource_lower_limit = dni_thresholds[0]
     user_resource_threshold = dni_thresholds[1]
     run_info_column_headers = ['resource_threshold_kwh_per_m2_day', 'yield_gwh']
@@ -462,7 +605,9 @@ if re_technology == 'wind':
     resource_raster_name = file_name_wind_speed_map
     land_discount = land_discount_wind
     slope_threshold = wind_slope_threshold
-    wind_rotor_diameter_meters = int(control_analysis_inputs.wind_turbine_rotor_diameter_meters)
+    wind_rotor_diameter_meters = int(
+        control_analysis_inputs.wind_turbine_rotor_diameter_meters
+    )
     number_of_turbines_per_km2 = math.floor(
         1 / (
             5
@@ -498,14 +643,15 @@ rotor_diameter, turbine_nameplate_capacity = (
 )
 
 country_boundaries = gpd.read_file(
-    input_spatial_datasets_folder + file_name_country_boundaries + ".shp")
-country_maps_for_clipping_folder = home_directory + r"\region_boundary_maps"
+    input_spatial_datasets_folder / f"{file_name_country_boundaries}.shp"
+)
+country_maps_for_clipping_folder = home_directory / "region_boundary_maps"
 
 log_file = pd.DataFrame()
 for country_counter in range(0, len(all_countries)):
     region_name_with_spaces = all_countries.ct[country_counter]
     region_name_without_spaces = all_countries.ct[country_counter].replace(" ", "")
-    print(Fore.GREEN + "Running MSR script for %s" % region_name_without_spaces)
+    print(f"{Fore.GREEN}Running MSR script for {region_name_without_spaces}")
 
     if roads_buffered_search:
         roads_buffer_distance_meters = (
@@ -521,38 +667,46 @@ for country_counter in range(0, len(all_countries)):
 
     output_folder = (
         home_directory
-        + control_paths.loc["folder_address_output_folder"][0]
-        + region_name_without_spaces
-        + "/"
+        / control_subpath(control_paths.loc["folder_address_output_folder"][0])
+        / region_name_without_spaces
     )
-    stage1_clipping_folder = output_folder + "stage1_input_datasets/"
-    os.makedirs(stage1_clipping_folder, exist_ok=True)
-    stage1_scoring_folder = output_folder + "stage1_scored_datasets/"
-    os.makedirs(stage1_scoring_folder, exist_ok=True)
-    stage2_competitive_resource_folder = output_folder + "stage2_competitive_resource_area/"
-    os.makedirs(stage2_competitive_resource_folder, exist_ok=True)
-    polygonization_folder = output_folder + "stage4_polygonization/"
-    os.makedirs(polygonization_folder, exist_ok=True)
-    final_msrs_folder = output_folder + "stage4_msr/"
-    os.makedirs(final_msrs_folder, exist_ok=True)
+    stage1_clipping_folder = output_folder / "stage1_input_datasets"
+    stage1_clipping_folder.mkdir(parents=True, exist_ok=True)
+    stage1_scoring_folder = output_folder / "stage1_scored_datasets"
+    stage1_scoring_folder.mkdir(parents=True, exist_ok=True)
+    stage2_competitive_resource_folder = (
+        output_folder / "stage2_competitive_resource_area")
+    stage2_competitive_resource_folder.mkdir(parents=True, exist_ok=True)
+    polygonization_folder = output_folder / "stage4_polygonization"
+    polygonization_folder.mkdir(parents=True, exist_ok=True)
+    final_msrs_folder = output_folder / "stage4_msr"
+    final_msrs_folder.mkdir(parents=True, exist_ok=True)
 
-    final_msrs_path = final_msrs_folder + re_technology + '_final_msrs.shp'
+    final_msrs_path = final_msrs_folder / f"{re_technology}_final_msrs.shp"
 
-    single_country = country_boundaries[country_boundaries.name == region_name_with_spaces]
-    os.makedirs(country_maps_for_clipping_folder, exist_ok=True)
+    single_country = country_boundaries[
+        country_boundaries.name == region_name_with_spaces
+    ]
+    country_maps_for_clipping_folder.mkdir(parents=True, exist_ok=True)
     single_country.to_crs('EPSG:4326').to_file(
-        country_maps_for_clipping_folder + '/' + region_name_without_spaces + '.shp')
+        country_maps_for_clipping_folder / f"{region_name_without_spaces}.shp"
+    )
     country_area_km2 = single_country.to_crs("ESRI:54009").area.iloc[0] / 1000000
 
     for script in scripts:
         if script == 1:
             upper_left_x, lower_right_y, lower_right_x, upper_left_y = (
-                single_country.total_bounds)
+                single_country.total_bounds
+            )
             min_x, min_y, max_x, max_y = single_country.total_bounds
-            clip_geometry = json.dumps(mapping(
-                box(upper_left_x, upper_left_y, lower_right_x, lower_right_y)))
+            clip_geometry = json.dumps(
+                mapping(box(upper_left_x, upper_left_y, lower_right_x, lower_right_y))
+            )
 
-            print(Fore.BLUE + "Starting Stage 1 (part-i) clipping and distance surfaces")
+            print(
+                Fore.BLUE
+                + "Starting Stage 1 (part-i) clipping and distance surfaces"
+            )
 
             raster_names = [
                 file_name_population_density,
@@ -562,19 +716,26 @@ for country_counter in range(0, len(all_countries)):
             ]
             for raster_name in raster_names:
                 input_raster_dataset = xarray.open_dataarray(
-                    "%s%s.tif" % (input_spatial_datasets_folder, raster_name))
+                    input_spatial_datasets_folder / f"{raster_name}.tif"
+                )
                 clipped_raster = input_raster_dataset.rio.clip_box(
-                    min_x, min_y, max_x, max_y)
+                    min_x, min_y, max_x, max_y
+                )
                 del input_raster_dataset
                 clipped_raster = clipped_raster.rio.clip(single_country.geometry)
                 clipped_raster.rio.to_raster(
-                    "%s%s_%s_clipped.tif" % (
-                        stage1_clipping_folder, re_technology, raster_name))
+                    stage1_clipping_folder
+                    / f"{re_technology}_{raster_name}_clipped.tif"
+                )
                 projected_raster = clipped_raster.rio.reproject("ESRI:54009")
                 projected_raster.rio.to_raster(
-                    "%s%s_%s_projected.tif" % (
-                        stage1_clipping_folder, re_technology, raster_name))
-                print("clipped and projected to ESRI:54009 %s raster dataset" % raster_name)
+                    stage1_clipping_folder
+                    / f"{re_technology}_{raster_name}_projected.tif"
+                )
+                print(
+                    f"clipped and projected to ESRI:54009 {raster_name} "
+                    "raster dataset"
+                )
             del clipped_raster, projected_raster
 
             vector_names = [
@@ -587,7 +748,7 @@ for country_counter in range(0, len(all_countries)):
             ]
             for vector_name in vector_names:
                 clipped_vector = gpd.read_file(
-                    "%s%s.shp" % (input_spatial_datasets_folder, vector_name),
+                    input_spatial_datasets_folder / f"{vector_name}.shp",
                     bbox=tuple(single_country.total_bounds),
                 )
 
@@ -599,7 +760,9 @@ for country_counter in range(0, len(all_countries)):
                     clipped_vector["raster_value"] = 1
                 else:
                     clipped_vector = gpd.GeoDataFrame(
-                        {'geometry': single_country.envelope}, geometry='geometry')
+                        {'geometry': single_country.envelope},
+                        geometry='geometry',
+                    )
                     clipped_vector["raster_value"] = 1
                     if vector_name in [file_name_protected_areas, file_name_water_bodies]:
                         clipped_vector["raster_value"] = 0
@@ -607,15 +770,18 @@ for country_counter in range(0, len(all_countries)):
                 clipped_vector = gpd.clip(clipped_vector, single_country.geometry)
                 if clipped_vector.empty:
                     clipped_vector = gpd.GeoDataFrame(
-                        {'geometry': single_country.geometry}, geometry='geometry')
+                        {'geometry': single_country.geometry},
+                        geometry='geometry',
+                    )
                     clipped_vector["raster_value"] = 1
                     if vector_name in [file_name_protected_areas, file_name_water_bodies]:
                         clipped_vector["raster_value"] = 0
                 clipped_vector = clipped_vector.to_crs('EPSG:4326')
                 clipped_vector.to_file(
-                    "%s%s_%s_clipped.shp" % (
-                        stage1_clipping_folder, re_technology, vector_name))
-                print("clipped %s vector dataset" % vector_name)
+                    stage1_clipping_folder
+                    / f"{re_technology}_{vector_name}_clipped.shp"
+                )
+                print(f"clipped {vector_name} vector dataset")
                 rasterized_clipped_vector = make_geocube(
                     clipped_vector,
                     measurements=["raster_value"],
@@ -626,17 +792,27 @@ for country_counter in range(0, len(all_countries)):
                     single_country.geometry)
                 rasterized_clipped_vector.rio.reproject(
                     "ESRI:54009").raster_value.rio.to_raster(
-                        "%s%s_%s_rasterized_projected.tif" % (
-                            stage1_clipping_folder, re_technology, vector_name))
-                print("%s vector dataset is rasterized and projected ESRI:54009" % vector_name)
+                        stage1_clipping_folder / (
+                            f"{re_technology}_{vector_name}_rasterized_projected.tif"
+                        )
+                    )
+                print(
+                    f"{vector_name} vector dataset is rasterized and "
+                    "projected ESRI:54009"
+                )
             del clipped_vector, rasterized_clipped_vector
 
             elevation_raster = rd.LoadGDAL(
-                "%s%s_%s_projected.tif" % (
-                    stage1_clipping_folder, re_technology, file_name_elevation))
-            slope_raster = rd.TerrainAttribute(elevation_raster, attrib='slope_percentage')
+                str(stage1_clipping_folder / (
+                    f"{re_technology}_{file_name_elevation}_projected.tif"
+                ))
+            )
+            slope_raster = rd.TerrainAttribute(
+                elevation_raster,
+                attrib='slope_percentage',
+            )
             rd.SaveGDAL(
-                "%s%s_slope_projected.tif" % (stage1_clipping_folder, re_technology),
+                str(stage1_clipping_folder / f"{re_technology}_slope_projected.tif"),
                 slope_raster,
             )
             del elevation_raster, slope_raster
@@ -649,79 +825,109 @@ for country_counter in range(0, len(all_countries)):
             ]
             for dataset_name in distance_dataset_names:
                 raster = xarray.open_dataarray(
-                    "%s%s_%s_rasterized_projected.tif" % (
-                        stage1_clipping_folder, re_technology, dataset_name))
+                    stage1_clipping_folder / (
+                        f"{re_technology}_{dataset_name}_rasterized_projected.tif"
+                    )
+                )
                 distance_surface = xrspatial.proximity(
-                    raster.squeeze('band'), distance_metric="EUCLEADIAN")
+                    raster.squeeze('band'),
+                    distance_metric="EUCLEADIAN",
+                )
                 distance_surface = distance_surface.rio.reproject("EPSG:4326")
                 distance_surface = distance_surface.rio.clip(single_country.envelope)
                 distance_surface = distance_surface.rio.clip(single_country.geometry)
                 distance_surface = distance_surface.rio.reproject("ESRI:54009")
                 distance_surface.rio.to_raster(
-                    "%s%s_distance_surface_%s.tif" % (
-                        stage1_clipping_folder, re_technology, dataset_name))
-                print("%s distance surface created" % dataset_name)
+                    stage1_clipping_folder / (
+                        f"{re_technology}_distance_surface_{dataset_name}.tif"
+                    )
+                )
+                print(f"{dataset_name} distance surface created")
 
             print("Stage 1 (part-i) clipping and distance surfaces finished")
 
-            print(Fore.BLUE + "Starting Stage 1 (part-ii) Scoring")
+            print(f"{Fore.BLUE}Starting Stage 1 (part-ii) Scoring")
 
             layer_to_score_names = [
-                "%s_projected" % file_name_population_density,
-                "%s_projected" % file_name_land_cover,
-                "%s_projected" % file_name_elevation,
-                "%s_rasterized_projected" % file_name_protected_areas,
-                "%s_rasterized_projected" % file_name_water_bodies,
-                "distance_surface_%s" % file_name_roads,
-                "distance_surface_%s" % file_name_transmission_grid,
+                f"{file_name_population_density}_projected",
+                f"{file_name_land_cover}_projected",
+                f"{file_name_elevation}_projected",
+                f"{file_name_protected_areas}_rasterized_projected",
+                f"{file_name_water_bodies}_rasterized_projected",
+                f"distance_surface_{file_name_roads}",
+                f"distance_surface_{file_name_transmission_grid}",
                 "slope_projected",
-                "%s_projected" % resource_raster_name,
+                f"{resource_raster_name}_projected",
             ]
             for layer_to_score_name in layer_to_score_names:
                 layer_to_score = xarray.open_dataarray(
-                    "%s%s_%s.tif" % (
-                        stage1_clipping_folder, re_technology, layer_to_score_name))
+                    stage1_clipping_folder / (
+                        f"{re_technology}_{layer_to_score_name}.tif"
+                    )
+                )
                 scored_layer = layer_to_score * 0
 
-                if layer_to_score_name == "%s_projected" % file_name_land_cover:
+                if layer_to_score_name == f"{file_name_land_cover}_projected":
                     scored_layer = scored_layer.where(
                         ~layer_to_score.isin(
-                            [11, 14, 20, 30, 110, 120, 130, 140, 150, 180, 190, 200]),
+                            [
+                                11, 14, 20, 30, 110, 120, 130, 140, 150, 180,
+                                190, 200,
+                            ]
+                        ),
                         1,
                     )
 
-                if layer_to_score_name == "%s_projected" % file_name_elevation:
+                if layer_to_score_name == f"{file_name_elevation}_projected":
                     scored_layer = scored_layer.where(~(layer_to_score < 2000), 1)
 
-                if layer_to_score_name == "%s_projected" % file_name_population_density:
+                if (
+                    layer_to_score_name
+                    == f"{file_name_population_density}_projected"
+                ):
                     scored_layer = scored_layer.where(
-                        ~(layer_to_score <= population_threshold[0]), 1)
+                        ~(layer_to_score <= population_threshold[0]),
+                        1,
+                    )
 
-                if layer_to_score_name == "%s_rasterized_projected" % file_name_protected_areas:
+                if (
+                    layer_to_score_name
+                    == f"{file_name_protected_areas}_rasterized_projected"
+                ):
                     scored_layer = scored_layer.where(~(layer_to_score == 0), 1)
 
-                if layer_to_score_name == "%s_rasterized_projected" % file_name_water_bodies:
+                if (
+                    layer_to_score_name
+                    == f"{file_name_water_bodies}_rasterized_projected"
+                ):
                     scored_layer = scored_layer.where(~(layer_to_score == 0), 1)
 
-                if layer_to_score_name == "distance_surface_%s" % file_name_roads:
+                if layer_to_score_name == f"distance_surface_{file_name_roads}":
                     if roads_buffered_search:
                         scored_layer = scored_layer.where(
                             ~(layer_to_score <= roads_buffer_distance_meters), 1)
                     else:
                         scored_layer = scored_layer.where(~(layer_to_score >= 0), 1)
 
-                if layer_to_score_name == "distance_surface_%s" % file_name_transmission_grid:
+                if (
+                    layer_to_score_name
+                    == f"distance_surface_{file_name_transmission_grid}"
+                ):
                     if grid_buffered_search:
                         scored_layer = scored_layer.where(
-                            ~(layer_to_score <= grid_buffer_distance_meters), 1)
+                            ~(layer_to_score <= grid_buffer_distance_meters),
+                            1,
+                        )
                     else:
                         scored_layer = scored_layer.where(~(layer_to_score >= 0), 1)
 
                 if layer_to_score_name == "slope_projected":
                     scored_layer = scored_layer.where(
-                        ~(layer_to_score <= slope_threshold[0]), 1)
+                        ~(layer_to_score <= slope_threshold[0]),
+                        1,
+                    )
 
-                if layer_to_score_name == "%s_projected" % resource_raster_name:
+                if layer_to_score_name == f"{resource_raster_name}_projected":
                     scored_layer = scored_layer.where(
                         ~(layer_to_score < resource_lower_limit), -1)
                     scored_layer = scored_layer.where(
@@ -733,41 +939,49 @@ for country_counter in range(0, len(all_countries)):
                     )
 
                 scored_layer.rio.to_raster(
-                    "%s%s_%s_scored.tif" % (
-                        stage1_scoring_folder, re_technology, layer_to_score_name))
-                print("%s scored" % layer_to_score_name)
+                    stage1_scoring_folder / (
+                        f"{re_technology}_{layer_to_score_name}_scored.tif"
+                    )
+                )
+                print(f"{layer_to_score_name} scored")
             print("Stage 1 (part-ii) Scoring finished")
 
         if script == 2:
-            print(Fore.BLUE + "Starting Stage 2 Get Competitive resource")
+            print(f"{Fore.BLUE}Starting Stage 2 Get Competitive resource")
 
             resource_raster = xarray.open_dataarray(
-                "%s%s_%s_projected.tif" % (
-                    stage1_clipping_folder, re_technology, resource_raster_name))
+                stage1_clipping_folder / (
+                    f"{re_technology}_{resource_raster_name}_projected.tif"
+                )
+            )
             suitable_area_raster_with_no_exclusions = xarray.open_dataarray(
-                "%s%s_%s_projected_scored.tif" % (
-                    stage1_scoring_folder, re_technology, resource_raster_name))
+                stage1_scoring_folder / (
+                    f"{re_technology}_{resource_raster_name}_projected_scored.tif"
+                )
+            )
 
             suitable_area_raster = suitable_area_raster_with_no_exclusions
             exclusion_count = 0
             scored_layer_names = [
-                "%s_projected" % file_name_population_density,
-                "%s_projected" % file_name_land_cover,
-                "%s_projected" % file_name_elevation,
-                "%s_projected" % file_name_elevation,
-                "%s_rasterized_projected" % file_name_protected_areas,
-                "%s_rasterized_projected" % file_name_water_bodies,
-                "distance_surface_%s" % file_name_roads,
-                "distance_surface_%s" % file_name_transmission_grid,
+                f"{file_name_population_density}_projected",
+                f"{file_name_land_cover}_projected",
+                f"{file_name_elevation}_projected",
+                f"{file_name_elevation}_projected",
+                f"{file_name_protected_areas}_rasterized_projected",
+                f"{file_name_water_bodies}_rasterized_projected",
+                f"distance_surface_{file_name_roads}",
+                f"distance_surface_{file_name_transmission_grid}",
                 "slope_projected",
             ]
             for scored_layer_name in scored_layer_names:
                 scored_layer = xarray.open_dataarray(
-                    "%s%s_%s_scored.tif" % (
-                        stage1_scoring_folder, re_technology, scored_layer_name))
+                    stage1_scoring_folder / (
+                        f"{re_technology}_{scored_layer_name}_scored.tif"
+                    )
+                )
                 if not (
                     re_technology != 'wind'
-                    and scored_layer_name == "%s_projected" % file_name_elevation
+                    and scored_layer_name == f"{file_name_elevation}_projected"
                 ):
                     suitable_area_raster = suitable_area_raster * scored_layer.reindex(
                         {'x': suitable_area_raster.x, 'y': suitable_area_raster.y},
@@ -775,23 +989,34 @@ for country_counter in range(0, len(all_countries)):
                     )
                     competitive_area_raster = suitable_area_raster * 0
                     competitive_area_raster = competitive_area_raster.where(
-                        ~(suitable_area_raster >= 1), 1)
+                        ~(suitable_area_raster >= 1),
+                        1,
+                    )
 
                     suitable_area_resource_raster = resource_raster.where(
-                        ~(suitable_area_raster <= 0), 0)
+                        ~(suitable_area_raster <= 0),
+                        0,
+                    )
                     competitive_area_resource_raster = resource_raster.where(
-                        ~(suitable_area_raster < 1), 0)
+                        ~(suitable_area_raster < 1),
+                        0,
+                    )
                 exclusion_count = exclusion_count + 1
 
             suitable_area_resource_raster = suitable_area_resource_raster.rio.reproject(
-                "EPSG:4326")
+                "EPSG:4326"
+            )
             suitable_area_resource_raster = suitable_area_resource_raster.rio.clip(
-                single_country.geometry)
+                single_country.geometry
+            )
             suitable_area_resource_raster = suitable_area_resource_raster.rio.reproject(
-                "ESRI:54009")
+                "ESRI:54009"
+            )
             suitable_area_resource_raster.rio.to_raster(
-                "%s%s_suitable_resource.tif" % (
-                    stage2_competitive_resource_folder, re_technology))
+                stage2_competitive_resource_folder / (
+                    f"{re_technology}_suitable_resource.tif"
+                )
+            )
 
             competitive_area_resource_raster = (
                 competitive_area_resource_raster.rio.reproject("EPSG:4326"))
@@ -800,15 +1025,18 @@ for country_counter in range(0, len(all_countries)):
             competitive_area_resource_raster = (
                 competitive_area_resource_raster.rio.reproject("ESRI:54009"))
             competitive_area_resource_raster.rio.to_raster(
-                "%s%s_competitive_resource.tif" % (
-                    stage2_competitive_resource_folder, re_technology))
+                stage2_competitive_resource_folder / (
+                    f"{re_technology}_competitive_resource.tif"))
 
             if relax_thresholds_for_resource_lagging_countries:
-                print(Fore.BLUE + "Performing resource sufficiency check (stage-3) before finishing the stage-2")
+                print(
+                    f"{Fore.BLUE}Performing resource sufficiency check (stage-3) "
+                    "before finishing the stage-2"
+                )
 
                 suitable_area_resource_raster_path = (
-                    "%s%s_suitable_resource.tif" % (
-                        stage2_competitive_resource_folder, re_technology))
+                    stage2_competitive_resource_folder / (
+                        f"{re_technology}_suitable_resource.tif"))
                 csp_footprint_mw_per_km2 = float(
                     control_analysis_inputs.csp_footprint_mw_per_km2)
                 wind_rotor_diameter_meters = float(
@@ -838,12 +1066,12 @@ for country_counter in range(0, len(all_countries)):
                     competitive_area_resource_raster = (
                         competitive_area_resource_raster.rio.reproject("ESRI:54009"))
                     competitive_area_resource_raster.rio.to_raster(
-                        "%s%s_competitive_resource_relaxed.tif" % (
-                            stage2_competitive_resource_folder, re_technology))
+                        stage2_competitive_resource_folder / (
+                            f"{re_technology}_competitive_resource_relaxed.tif"))
                     log_file = log_file.append(pd.DataFrame(
                         [
-                            "%s: Resource threshold reduced to: %s"
-                            % (region_name_without_spaces, resource_threshold)
+                            f"{region_name_without_spaces}: Resource threshold "
+                            f"reduced to: {resource_threshold}"
                         ],
                         columns=['log'],
                     ))
@@ -857,11 +1085,12 @@ for country_counter in range(0, len(all_countries)):
                     },
                     index=[0],
                 ).to_csv(
-                    "%s%s_log_resource_identification_polygonization.csv" % (
-                        stage2_competitive_resource_folder, re_technology))
+                    stage2_competitive_resource_folder / (
+                        f"{re_technology}_log_resource_identification_polygonization.csv"))
                 print(
-                    "Stage 2 (get Competitive resource) finished with resource sufficiency check and ResourceThreshold of %s"
-                    % resource_threshold)
+                    "Stage 2 (get Competitive resource) finished with resource "
+                    f"sufficiency check and ResourceThreshold of {resource_threshold}"
+                )
 
             else:
                 resource_threshold = user_resource_threshold
@@ -875,31 +1104,31 @@ for country_counter in range(0, len(all_countries)):
                     },
                     index=[0],
                 ).to_csv(
-                    "%s%s_log_resource_identification_polygonization.csv" % (
-                        stage2_competitive_resource_folder, re_technology))
+                    stage2_competitive_resource_folder / (
+                        f"{re_technology}_log_resource_identification_polygonization.csv"))
                 print("Stage 2 (get Competitive resource) finished without resource sufficiency check")
         if script == 3:
 
-            print(Fore.BLUE + "Starting stage 4 part(i) Polygonization")
+            print(f"{Fore.BLUE}Starting stage 4 part(i) Polygonization")
 
             inputs_from_stage2 = pd.read_csv(
-                "%s%s_log_resource_identification_polygonization.csv" % (
-                    stage2_competitive_resource_folder, re_technology))
+                stage2_competitive_resource_folder / (
+                    f"{re_technology}_log_resource_identification_polygonization.csv"))
             resource_threshold = inputs_from_stage2.resource_threshold.values[0]
             indicative_yield_gwh = inputs_from_stage2.indicative_yield_gwh.values[0]
 
             run_info_values = [(resource_threshold, indicative_yield_gwh)]
             run_info = pd.DataFrame(run_info_values, columns=run_info_column_headers)
-            run_info.to_csv(final_msrs_folder + re_technology + 'run_info.csv', index=False)
+            run_info.to_csv(final_msrs_folder / f"{re_technology}run_info.csv", index=False)
 
             if resource_threshold < user_resource_threshold:
                 resource_potential_raster_path = (
-                    "%s%s_competitive_resource_relaxed.tif" % (
-                        stage2_competitive_resource_folder, re_technology))
+                    stage2_competitive_resource_folder / (
+                        f"{re_technology}_competitive_resource_relaxed.tif"))
             else:
                 resource_potential_raster_path = (
-                    "%s%s_competitive_resource.tif" % (
-                        stage2_competitive_resource_folder, re_technology))
+                    stage2_competitive_resource_folder / (
+                        f"{re_technology}_competitive_resource.tif"))
 
             min_contiguous_area_suitable_for_msr_km2 = (
                 default_min_contiguous_area_suitable_for_msr_km2)
@@ -915,27 +1144,31 @@ for country_counter in range(0, len(all_countries)):
             )
 
             if type(msrs) == int:
-                if os.path.isfile(final_msrs_path):
-                    os.remove(final_msrs_folder + re_technology + '_final_msrs.shp')
-                    os.remove(final_msrs_folder + re_technology + '_final_msrs.shx')
-                    os.remove(final_msrs_folder + re_technology + '_final_msrs.prj')
-                    os.remove(final_msrs_folder + re_technology + '_final_msrs.cpg')
-                    os.remove(final_msrs_folder + re_technology + '_final_msrs.dbf')
-                print(Fore.RED + "*******Sufficient resource not found to create any MSRs**************")
+                if final_msrs_path.is_file():
+                    for suffix in [".shp", ".shx", ".prj", ".cpg", ".dbf"]:
+                        (final_msrs_folder / f"{re_technology}_final_msrs{suffix}").unlink()
+                print(
+                    f"{Fore.RED}*******Sufficient resource not found to create "
+                    "any MSRs**************"
+                )
                 log_file = log_file.append(pd.DataFrame(
                     [
-                        "%s: Sufficient resource not found to create any MSRs"
-                        % region_name_without_spaces
+                        f"{region_name_without_spaces}: Sufficient resource "
+                        "not found to create any MSRs"
                     ],
                     columns=['log'],
                 ))
                 break
             else:
                 msrs.to_file(final_msrs_path)
-                print(Fore.GREEN + "MSR creation done")
+                print(f"{Fore.GREEN}MSR creation done")
 
         if script == 4:
-            print(Fore.BLUE + "Stage 4 part(ii) Attribution: Calculating attributes from zone centroids from Lines, Roads, Power stations, Loadcenters")
+            print(
+                f"{Fore.BLUE}Stage 4 part(ii) Attribution: Calculating "
+                "attributes from zone centroids from Lines, Roads, Power "
+                "stations, Loadcenters"
+            )
 
             msrs = gpd.read_file(final_msrs_path)
             msrs['area_km2'] = msrs.geometry.area / 1000000
@@ -944,8 +1177,8 @@ for country_counter in range(0, len(all_countries)):
 
             distance_to_roads_stats_per_msr = zonal_stats(
                 final_msrs_path,
-                "%s%s_distance_surface_%s.tif" % (
-                    stage1_clipping_folder, re_technology, file_name_roads),
+                stage1_clipping_folder / (
+                    f"{re_technology}_distance_surface_{file_name_roads}.tif"),
                 stats="count min mean max median sum",
             )
             msrs['road_dist'] = (
@@ -953,8 +1186,7 @@ for country_counter in range(0, len(all_countries)):
             print("Distances to roads inserted")
 
             clipped_vector = gpd.read_file(
-                "%s%s.shp" % (
-                    input_spatial_datasets_folder, file_name_transmission_grid),
+                input_spatial_datasets_folder / f"{file_name_transmission_grid}.shp",
                 bbox=tuple(single_country.total_bounds),
             )
             if not clipped_vector.empty:
@@ -962,10 +1194,8 @@ for country_counter in range(0, len(all_countries)):
             if clipped_vector.empty:
                 distance_to_tgrid_stats_per_msr = zonal_stats(
                     final_msrs_path,
-                    "%s%s.tif" % (
-                        input_spatial_datasets_folder,
-                        file_name_continent_distance_surface_tgrid,
-                    ),
+                    input_spatial_datasets_folder / (
+                        f"{file_name_continent_distance_surface_tgrid}.tif"),
                     stats="count min mean max median sum",
                 )
                 msrs['t_dist_gf'] = (
@@ -974,11 +1204,8 @@ for country_counter in range(0, len(all_countries)):
             else:
                 distance_to_tgrid_stats_per_msr = zonal_stats(
                     final_msrs_path,
-                    "%s%s_distance_surface_%s.tif" % (
-                        stage1_clipping_folder,
-                        re_technology,
-                        file_name_transmission_grid,
-                    ),
+                    stage1_clipping_folder / (
+                        f"{re_technology}_distance_surface_{file_name_transmission_grid}.tif"),
                     stats="count min mean max median sum",
                 )
 
@@ -988,11 +1215,8 @@ for country_counter in range(0, len(all_countries)):
 
             distance_to_dgrid_stats_per_msr = zonal_stats(
                 final_msrs_path,
-                "%s%s_distance_surface_%s.tif" % (
-                    stage1_clipping_folder,
-                    re_technology,
-                    file_name_distribution_grid,
-                ),
+                stage1_clipping_folder / (
+                    f"{re_technology}_distance_surface_{file_name_distribution_grid}.tif"),
                 stats="count min mean max median sum",
             )
             msrs['d_dist_gf'] = (
@@ -1003,7 +1227,7 @@ for country_counter in range(0, len(all_countries)):
             print("Distances to closest grid line (Transmission or Distribution) inserted")
 
             substations = gpd.read_file(
-                "%s%s.shp" % (input_spatial_datasets_folder, file_name_substations),
+                input_spatial_datasets_folder / f"{file_name_substations}.shp",
                 bbox=tuple(single_country.total_bounds),
             ).to_crs("ESRI:54009")
             msrs['substation_dist'] = (
@@ -1016,10 +1240,8 @@ for country_counter in range(0, len(all_countries)):
             print("distance to nearest substation inserted")
 
             load_centers = gpd.read_file(
-                "%s%s.shp" % (
-                    input_spatial_datasets_folder,
-                    file_name_urban_area_load_centers,
-                ),
+                input_spatial_datasets_folder / (
+                    f"{file_name_urban_area_load_centers}.shp"),
                 bbox=tuple(single_country.total_bounds),
             ).to_crs("ESRI:54009")
             msrs['load_dist'] = (
@@ -1056,22 +1278,22 @@ for country_counter in range(0, len(all_countries)):
             print("load center related attributes inserted")
             msrs.to_file(final_msrs_path)
 
-            print(Fore.GREEN + "Attribution complete")
+            print(f"{Fore.GREEN}Attribution complete")
 
             log_file = log_file.append(pd.DataFrame(
-                ["%s:Attribution completed" % region_name_without_spaces],
+                [f"{region_name_without_spaces}:Attribution completed"],
                 columns=['log'],
             ))
             date_time_stamp = time.localtime()
-            date_time_stamp = "%s%s%s%s%s%s" % (
-                date_time_stamp.tm_year,
-                date_time_stamp.tm_mon,
-                date_time_stamp.tm_mday,
-                date_time_stamp.tm_hour,
-                date_time_stamp.tm_min,
-                date_time_stamp.tm_sec,
+            date_time_stamp = (
+                f"{date_time_stamp.tm_year}"
+                f"{date_time_stamp.tm_mon}"
+                f"{date_time_stamp.tm_mday}"
+                f"{date_time_stamp.tm_hour}"
+                f"{date_time_stamp.tm_min}"
+                f"{date_time_stamp.tm_sec}"
             )
-            log_file.to_csv(home_directory + "//" + date_time_stamp + re_technology + '_log_file.csv')
+            log_file.to_csv(home_directory / f"{date_time_stamp}{re_technology}_log_file.csv")
     #try:shutil.rmtree(stage1_clipping_folder)
     # #except: pass
     # try:shutil.rmtree(SubfolderStage1_Scoring)
@@ -1082,4 +1304,3 @@ for country_counter in range(0, len(all_countries)):
     # except: pass
     # try:shutil.rmtree(SubFolder_Polygonization)
     # except: pass
-
