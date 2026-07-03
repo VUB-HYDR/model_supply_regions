@@ -39,6 +39,7 @@ import xrspatial
 from geocube.api.core import make_geocube
 from osgeo import osr
 from rasterio.features import shapes
+from rasterio.mask import mask
 from rasterio.warp import Resampling, reproject
 from rasterstats import zonal_stats
 from scipy.ndimage.measurements import label
@@ -78,6 +79,7 @@ class MsrCreatorConfig:
     control_analysis_inputs: pd.DataFrame
     file_name_population_density: str
     file_name_land_cover: str
+    file_name_climate_zones: str
     file_name_elevation: str
     file_name_protected_areas: str
     file_name_substations: str
@@ -429,6 +431,75 @@ def compute_load_center_attributes_for_msr_centroid(
     )
 
 
+def compute_categorical_raster_distribution_for_msr(
+    msr_geometry,
+    categorical_raster_path,
+) -> dict[int, float]:
+    """Return percent coverage by categorical raster class for one MSR."""
+
+    try:
+        with rasterio.open(categorical_raster_path) as src:
+            out_image, _ = mask(
+                src,
+                [msr_geometry.__geo_interface__],
+                crop=True,
+                all_touched=True,
+                filled=False,
+            )
+            data = out_image[0].compressed()
+            nodata = src.nodata
+    except ValueError:
+        return {}
+
+    if nodata is not None:
+        data = data[data != nodata]
+    if np.issubdtype(data.dtype, np.floating):
+        data = data[~np.isnan(data)]
+
+    if data.size == 0:
+        return {}
+
+    unique, counts = np.unique(data, return_counts=True)
+    total = counts.sum()
+
+    return {
+        int(value): (count / total) * 100
+        for value, count in zip(unique, counts)
+    }
+
+
+def compute_elevation_attributes_for_msr(msr_geometry, elevation_raster_path):
+    """Return mean, minimum, and maximum elevation for one MSR."""
+
+    try:
+        with rasterio.open(elevation_raster_path) as src:
+            out_image, _ = mask(
+                src,
+                [msr_geometry.__geo_interface__],
+                crop=True,
+                all_touched=True,
+                filled=False,
+            )
+            data = out_image[0].compressed()
+            nodata = src.nodata
+    except ValueError:
+        return np.nan, np.nan, np.nan
+
+    if nodata is not None:
+        data = data[data != nodata]
+    if np.issubdtype(data.dtype, np.floating):
+        data = data[~np.isnan(data)]
+
+    if data.size == 0:
+        return np.nan, np.nan, np.nan
+
+    return (
+        float(np.mean(data)),
+        float(np.min(data)),
+        float(np.max(data)),
+    )
+
+
 def run_resource_sufficiency_stage(
     suitable_area_resource_raster_path,
     user_resource_threshold,
@@ -610,18 +681,6 @@ def configure_logging(level: int = logging.INFO) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-
-def control_subpath(value):
-    """Convert a workbook folder value into a relative path component.
-
-    The control workbook stores some subfolders with leading/trailing slashes.
-    Stripping those separators keeps path joining platform-independent while
-    preserving the configured folder name.
-    """
-
-    return Path(str(value).strip("/\\"))
-
-
 def load_control_workbook(control_file: Path) -> dict[str, pd.DataFrame]:
     """Read the MSR Creator control workbook into named DataFrames.
 
@@ -714,7 +773,11 @@ def build_msr_creator_config(
     input_spatial_datasets_folder = Path(
         str(control_paths.loc["folder_address_input_spatial_datasets"][0])
     )
-    country_maps_for_clipping_folder = Path(home_directory / "region_boundary_maps")
+    
+    country_maps_for_clipping_folder = Path(
+        Path(str(control_paths.loc["folder_address_output_folder"][0])) 
+        / "region_boundary_maps"
+    )
     countries = pd.read_csv(
         control_paths.loc["file_address_country_names_list"][0],
         names=["country"]
@@ -723,6 +786,7 @@ def build_msr_creator_config(
     file_name_population_density = str(control_dataset_names.loc["file_name_population_density"][0])
     file_name_land_cover = str(control_dataset_names.loc["file_name_land_cover"][0])
     file_name_elevation = str(control_dataset_names.loc["file_name_elevation"][0])
+    file_name_climate_zones = str(control_dataset_names.loc["file_name_climate_zones"][0])
     file_name_protected_areas = str(control_dataset_names.loc["file_name_protected_areas"][0])
     file_name_substations = str(control_dataset_names.loc["file_name_substations"][0])
     file_name_urban_area_load_centers = str(control_dataset_names.loc["file_name_urban_area_load_centers"][0])
@@ -898,6 +962,7 @@ def build_msr_creator_config(
         file_name_population_density=file_name_population_density,
         file_name_land_cover=file_name_land_cover,
         file_name_elevation=file_name_elevation,
+        file_name_climate_zones=file_name_climate_zones,
         file_name_protected_areas=file_name_protected_areas,
         file_name_substations=file_name_substations,
         file_name_urban_area_load_centers=file_name_urban_area_load_centers,
@@ -1001,8 +1066,8 @@ def prepare_country_context(
             * 1000
         )
 
-    output_folder = (
-        control_subpath(config.control_paths.loc["folder_address_output_folder"][0])
+    output_folder = Path(
+        Path(str(config.control_paths.loc["folder_address_output_folder"][0]))
         / country_name_without_spaces
     )
     paths = CountryPaths(
@@ -1135,6 +1200,7 @@ def run_stage_1_clipping_and_scoring(
         config.file_name_land_cover,
         config.file_name_elevation,
         config.resource_raster_name,
+        config.file_name_climate_zones
     ]
     for raster_name in raster_names:
         input_raster_dataset = xarray.open_dataarray(
@@ -1651,9 +1717,6 @@ def run_stage_4_polygonization(
             paths.stage_2_competitive_resource_folder / (
                 f"{config.re_technology}_competitive_resource.tif"))
 
-    min_contiguous_area_suitable_for_msr_km2 = (
-        config.default_min_contiguous_area_suitable_for_msr_km2)
-
     msrs = polygonize_resource_potential(
         resource_potential_raster_path,
         paths.polygonization_folder,
@@ -1661,7 +1724,7 @@ def run_stage_4_polygonization(
         resource_threshold,
         config.band_count_for_multi_resolve_algorithm,
         config.max_area_to_cap_msrs_km2,
-        min_contiguous_area_suitable_for_msr_km2,
+        config.default_min_contiguous_area_suitable_for_msr_km2,
     )
 
     if type(msrs) == int:
@@ -1715,9 +1778,9 @@ def run_stage_4_attribution(
         msrs['AreakM2'] * config.land_discount * config.re_spatial_footprint_mw_per_km2)
 
     distance_to_roads_stats_per_msr = zonal_stats(
-        paths.final_msrs_path,
-        paths.stage_1_clipping_folder / (
-            f"{config.re_technology}_distance_surface_{config.file_name_roads}.tif"),
+        str(paths.final_msrs_path),
+        str(paths.stage_1_clipping_folder / (
+            f"{config.re_technology}_distance_surface_{config.file_name_roads}.tif")),
         stats="count min mean max median sum",
     )
     msrs['RoadDist'] = (
@@ -1734,9 +1797,9 @@ def run_stage_4_attribution(
         clipped_vector = gpd.clip(clipped_vector, single_country.geometry)
     if clipped_vector.empty:
         distance_to_tgrid_stats_per_msr = zonal_stats(
-            paths.final_msrs_path,
-            config.input_spatial_datasets_folder / (
-                f"{config.file_name_continent_distance_surface_tgrid}.tif"),
+            str(paths.final_msrs_path),
+            str(config.input_spatial_datasets_folder / (
+                f"{config.file_name_continent_distance_surface_tgrid}.tif")),
             stats="count min mean max median sum",
         )
         msrs['T_Dist_gf'] = (
@@ -1747,9 +1810,9 @@ def run_stage_4_attribution(
         )
     else:
         distance_to_tgrid_stats_per_msr = zonal_stats(
-            paths.final_msrs_path,
-            paths.stage_1_clipping_folder / (
-                f"{config.re_technology}_distance_surface_{config.file_name_transmission_grid}.tif"),
+            str(paths.final_msrs_path),
+            str(paths.stage_1_clipping_folder / (
+                f"{config.re_technology}_distance_surface_{config.file_name_transmission_grid}.tif")),
             stats="count min mean max median sum",
         )
 
@@ -1761,9 +1824,9 @@ def run_stage_4_attribution(
         )
 
     distance_to_dgrid_stats_per_msr = zonal_stats(
-        paths.final_msrs_path,
-        paths.stage_1_clipping_folder / (
-            f"{config.re_technology}_distance_surface_{config.file_name_distribution_grid}.tif"),
+        str(paths.final_msrs_path),
+        str(paths.stage_1_clipping_folder / (
+            f"{config.re_technology}_distance_surface_{config.file_name_distribution_grid}.tif")),
         stats="count min mean max median sum",
     )
     msrs['D_Dist_gf'] = (
@@ -1836,6 +1899,78 @@ def run_stage_4_attribution(
     LOGGER.info(
         f"Load-centre attributes inserted | country={context.country_name_without_spaces}"
     )
+
+    land_cover_raster_path = (
+        paths.stage_1_clipping_folder / (
+            f"{config.re_technology}_{config.file_name_land_cover}_projected.tif"))
+    land_distributions = msrs.geometry.apply(
+        lambda geometry: compute_categorical_raster_distribution_for_msr(
+            geometry,
+            land_cover_raster_path
+        )
+    )
+    land_use = land_distributions.apply(pd.Series).fillna(0)
+    if land_use.empty:
+        msrs['LUDomCl'] = np.nan
+        msrs['LUDomSh'] = 0.0
+    else:
+        land_use = land_use.rename(columns=lambda value: f"LU_{int(value)}")
+        msrs = pd.concat([msrs, land_use], axis=1)
+        valid_land = land_use.sum(axis=1) > 0
+        msrs['LUDomCl'] = np.nan
+        msrs.loc[valid_land, 'LUDomCl'] = (
+            land_use.loc[valid_land]
+            .idxmax(axis=1)
+            .str.replace('LU_', '', regex=False)
+            .astype(float)
+        )
+        msrs['LUDomSh'] = land_use.max(axis=1)
+    LOGGER.info(
+        f"Land use attributes inserted | country={context.country_name_without_spaces}"
+    )
+
+    climate_zone_raster_path = (
+        paths.stage_1_clipping_folder / (
+            f"{config.re_technology}_{config.file_name_climate_zones}_projected.tif"))
+    climate_distributions = msrs.geometry.apply(
+        lambda geometry: compute_categorical_raster_distribution_for_msr(
+            geometry,
+            climate_zone_raster_path
+        )
+    )
+    kc = climate_distributions.apply(pd.Series).fillna(0)
+    if kc.empty:
+        msrs['KCDomCl'] = np.nan
+        msrs['KCDomSh'] = 0.0
+    else:
+        kc = kc.rename(columns=lambda value: f"KC_{int(value)}")
+        msrs = pd.concat([msrs, kc], axis=1)
+        valid_kc = kc.sum(axis=1) > 0
+        msrs['KCDomCl'] = np.nan
+        msrs.loc[valid_kc, 'KCDomCl'] = (
+            kc.loc[valid_kc]
+            .idxmax(axis=1)
+            .str.replace('KC_', '', regex=False)
+            .astype(float)
+        )
+        msrs['KCDomSh'] = kc.max(axis=1)
+    LOGGER.info(
+        f"Climate zone attributes inserted | country={context.country_name_without_spaces}"
+    )
+
+    elevation_raster_path = (
+        paths.stage_1_clipping_folder / (
+            f"{config.re_technology}_{config.file_name_elevation}_projected.tif"))
+    msrs[['ElMean', "ElMin", "ElMax"]] = msrs.geometry.apply(
+        lambda geometry: compute_elevation_attributes_for_msr(
+            geometry,
+            elevation_raster_path
+        )
+    ).apply(pd.Series)
+    LOGGER.info(
+        f"Elevation attributes inserted | country={context.country_name_without_spaces}"
+    )
+
     msrs.to_file(paths.final_msrs_path)
 
     LOGGER.info(
