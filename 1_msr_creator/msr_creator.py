@@ -699,6 +699,16 @@ def prepare_region_context(
         / "1_msr_creator"
         / region_name_without_spaces
     )
+
+    if config.re_technology == "solarpv":
+        output_path = (
+            output_folder_msr_creator / "stage6_attribution" / f"{config.re_technology}_final_msrs.shp"
+        )
+    elif config.re_technology == "wind":
+        output_path = (
+            output_folder_msr_creator / "stage6_attribution" / f"{config.re_technology}_{config.elevation_threshold}_final_msrs.shp"
+        )
+
     paths = RegionPaths(
         output_folder_msr_creator=output_folder_msr_creator,
         region_maps_for_clipping_folder=output_folder_msr_creator / "region_boundary_maps",
@@ -709,9 +719,7 @@ def prepare_region_context(
         ),
         stage_5_polygonization_folder=output_folder_msr_creator / "stage5_polygonization",
         stage_6_attribution_folder=output_folder_msr_creator / "stage6_attribution",
-        output_path=(
-            output_folder_msr_creator / "stage6_attribution" / f"{config.re_technology}_{config.elevation_threshold}_final_msrs.shp"
-        ),
+        output_path=output_path,
     )
     paths.stage_1_clipping_folder.mkdir(parents=True, exist_ok=True)
     paths.stage_2_scoring_folder.mkdir(parents=True, exist_ok=True)
@@ -2346,6 +2354,8 @@ def plot_elevation_composition(
     elif config.re_technology == "solarcsp":
         re_name = "Solar CSP"
         colormap = "Oranges"
+    
+    msrs = msrs.copy()
     
     elevation_raster_path = (
         context.paths.stage_1_clipping_folder
