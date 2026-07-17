@@ -13,6 +13,21 @@ import math
 import geopandas as gpd
 import time
 import traceback
+from pathlib import Path
+
+from shapely.geometry import Polygon
+from shapely.geometry.base import BaseGeometry, BaseMultipartGeometry
+def _disable_shapely_array_interface():
+    def _raise_attribute_error(self):
+        raise AttributeError("__array_interface__ is intentionally disabled")
+
+    BaseGeometry.__array_interface__ = property(_raise_attribute_error)
+    BaseMultipartGeometry.__array_interface__ = property(
+        _raise_attribute_error
+    )
+    Polygon.__array_interface__ = property(_raise_attribute_error)
+
+_disable_shapely_array_interface()
 
 def ComputeHourlyCF_SolarPV (GSA_GHI_MSR_Mean, temp_2m, GHI): #returns hourly CF for the location whose hourly inputs are given as inputs
     # Inputs
@@ -30,8 +45,8 @@ def ComputeHourlyCF_SolarPV (GSA_GHI_MSR_Mean, temp_2m, GHI): #returns hourly CF
     GHI[GHI < 0] = 0
     GHI=GHI/3600000 #convert ERA GHI given in jouls/m2 to kwh/m2 (the units of GSA GHI dataset)
     ERA5_GHI_OriginalAnnualYield=np.sum(GHI)
-    GHIAnnualBias_KWh=GSA_GHI_MSR_Mean*(8784/24)-ERA5_GHI_OriginalAnnualYield #GSA GHI dataset is mean per day yield
-    GHI_ifallCorrected = GHI + GHIAnnualBias_KWh / 8784
+    GHIAnnualBias_KWh=GSA_GHI_MSR_Mean*(hours_in_year/24)-ERA5_GHI_OriginalAnnualYield #GSA GHI dataset is mean per day yield
+    GHI_ifallCorrected = GHI + GHIAnnualBias_KWh / hours_in_year
     BiasCorrection_GHI_Adder_KWh=GHIAnnualBias_KWh/len(GHI[(GHI!=0)&(GHI_ifallCorrected<1)&(GHI_ifallCorrected>0)])
     GHI[(GHI!=0)&(GHI_ifallCorrected<1)&(GHI_ifallCorrected>0)]=GHI[(GHI!=0)&(GHI_ifallCorrected<1)&(GHI_ifallCorrected>0)]+BiasCorrection_GHI_Adder_KWh
     GHI[GHI<0]=0
@@ -138,7 +153,7 @@ def develop_allMSR_8784BiasCorrEffectiveWindSpeeds(pd_allMSR_Hourly100mEffective
         # compute the dependent variable x i.e. annual ERA5 means
         pd_allMSR_ERA5mean = pd_allMSR_TimeSeriesProfiles.mean(axis=1)
         
-        ranks = [i + 1 for i in range(8784)]  # 1,2...8784
+        ranks = [i + 1 for i in range(hours_in_year)]  # 1,2...8784
         # sort time series in ascending order. Reformat the column names as rank numbers [1,2...8784]. Rank 1 goes to the smallest wind speed. Data column under each rank will be indpendent variable y
         pd_allMSR_TimeSortedProfiles = pd_allMSR_TimeSeriesProfiles.transpose().apply(np.sort, axis=0).transpose().set_axis(ranks, axis=1)
 
@@ -148,7 +163,7 @@ def develop_allMSR_8784BiasCorrEffectiveWindSpeeds(pd_allMSR_Hourly100mEffective
         # pd_LinearFitParam_ab=pd.DataFrame()
         
         #plt.figure(1)
-        for r in range(1, len(pd_allMSR_TimeSeriesProfiles.iloc[0,:8784]) + 1):  # rank wise loop, get rank wise fitted equations, rank wise extrapolate (bias-correction) Time Sorted data values
+        for r in range(1, len(pd_allMSR_TimeSeriesProfiles.iloc[0,:hours_in_year]) + 1):  # rank wise loop, get rank wise fitted equations, rank wise extrapolate (bias-correction) Time Sorted data values
             print("rank %s: curve fitted, value extrapolated"%r)
             #popt, pcov = curve_fit(f, pd_allMSR_ERA5mean, pd_allMSR_TimeSortedProfiles.iloc[:, r - 1])  # get a and b by fitting the ax+b over all MSR datapoints for a given rank 'r'. Column calling here is by numerical order i.e. (0,8784) so needed to subtract 1
             popt = np.polyfit(pd_allMSR_ERA5mean, pd_allMSR_TimeSortedProfiles.iloc[:, r - 1], 1) # get a and b by fitting the ax+b over all MSR datapoints for a given rank 'r'. Column calling here is by numerical order i.e. (0,8784) so needed to subtract 1
@@ -183,23 +198,23 @@ def develop_allMSR_8784BiasCorrEffectiveWindSpeeds(pd_allMSR_Hourly100mEffective
 
 def CreateLocalTimeProfile(pd_UTC, pd_CountryUTC_offsets, country_withspaces):
     # Create Local Time Profile
-    UTCHourTags = ['H%s' % i for i in range(1, 8785)]
+    UTCHourTags = ['H%s' % i for i in range(1, hours_in_year + 1)]
     offset = pd_CountryUTC_offsets[pd_CountryUTC_offsets.Country == country_withspaces].Hours.iloc[0]
-    LocalTimeHourTags = ['H%s' % (i % 8784 + 1) for i in range(offset, 8784 + offset)]
+    LocalTimeHourTags = ['H%s' % (i % hours_in_year + 1) for i in range(offset, hours_in_year + offset)]
     ColRenameDictionary = dict(zip(UTCHourTags, LocalTimeHourTags))
     print("%s UTC Offset:%s" % (country_withspaces, offset))
     # print(ColRenameDictionary)
 
     pd_LocalTime = pd_UTC.rename(columns=ColRenameDictionary)
-    pd_LocalTime = pd_LocalTime.set_index(pd_LocalTime.MSR_ID[:])
-    pd_LocalTime = pd_LocalTime.drop(['MSR_ID'], axis=1)
+    # pd_LocalTime = pd_LocalTime.set_index(pd_LocalTime.MSR_ID[:])
+    # pd_LocalTime = pd_LocalTime.drop(['MSR_ID'], axis=1)
 
     cols = pd_LocalTime.columns.to_list()
     if offset > 0:
-        NewColOrder = cols[:-8784] + cols[-offset:] + cols[-8784:-offset]
+        NewColOrder = cols[:-hours_in_year] + cols[-offset:] + cols[-hours_in_year:-offset]
         pd_LocalTime = pd_LocalTime[NewColOrder]
     if offset < 0:
-        NewColOrder = cols[:-8784] + cols[-8784 - offset:] + cols[-8784:-8784 - offset]
+        NewColOrder = cols[:-hours_in_year] + cols[-hours_in_year - offset:] + cols[-hours_in_year:-hours_in_year - offset]
         pd_LocalTime = pd_LocalTime[NewColOrder]
 
     return pd_LocalTime
@@ -207,36 +222,47 @@ def CreateLocalTimeProfile(pd_UTC, pd_CountryUTC_offsets, country_withspaces):
 #Start of the main program
 
 #Read control input file
-ControlPathsAndNames=pd.read_excel('ControlFile_ProfileGenerator.xlsx', sheet_name="PathsAndNames", index_col=0)
-ControlConfigurations=pd.read_excel('ControlFile_ProfileGenerator.xlsx', sheet_name="Configurations", index_col=0)
-pd_CountryUTC_offsets=pd.read_excel('ControlFile_ProfileGenerator.xlsx', sheet_name="CountryUTC_Offset_InUse")
+ControlPathsAndNames=pd.read_excel('control_file_profile_generator.xlsx', sheet_name="paths", index_col=0)
+control_datasets=pd.read_excel('control_file_profile_generator.xlsx', sheet_name="datasets", index_col=0)
+control_parameters=pd.read_excel('control_file_profile_generator.xlsx', sheet_name="parameters", index_col=0)
+ControlConfigurations=pd.read_excel('control_file_profile_generator.xlsx', sheet_name="configurations", index_col=0)
 
 #load paths
-np_ERA5Data_inst=Dataset(ControlPathsAndNames.loc["ERA5DataFilePath_inst"][0])
-np_ERA5Data_accum=Dataset(ControlPathsAndNames.loc["ERA5DataFilePath_accum"][0])
-pd_WindSpeed_to_Power = pd.read_csv(ControlPathsAndNames.loc["ThreeIEC_TurbinePowerCurves"][0])
-AllCountries=pd.read_csv(ControlPathsAndNames.loc["FileAddress_CountryNamesList"][0],names=["Ct"])
-Input_MSR_Folder=ControlPathsAndNames.loc["Input_MSR_Folder"][0]
-OutputFolder_UTCProfiles=ControlPathsAndNames.loc["OutputFolder"][0]+"\\Results_UTC_Profiles"
-OutputFolder_LocalTime=ControlPathsAndNames.loc["OutputFolder"][0]+"\\Results_LocalTimeProfiles"
-ResourceRasterCarryingSubFolderName=ControlPathsAndNames.loc["ResourceRasterCarryingSubFolderName"][0]
-MSR_DataCarryingSubFolderName=ControlPathsAndNames.loc["MSR_DataCarryingSubFolderName"][0]
-SolarPVNameConvention=ControlPathsAndNames.loc["SolarPVNameConvention"][0]
-WindNameConvention=ControlPathsAndNames.loc["WindNameConvention"][0]
+input_datasets_folder=str(ControlPathsAndNames.loc["input_datasets_folder"][0])
+print(input_datasets_folder + "\\" + control_datasets.loc["file_name_region_utc_offset"][0] + '.csv')
+pd_CountryUTC_offsets=pd.read_csv(input_datasets_folder + "\\" + control_datasets.loc["file_name_region_utc_offset"][0] + '.csv', sep=";")
+np_ERA5Data_inst_10m=Dataset(input_datasets_folder + "\\" + control_datasets.loc["10m_component_of_wind"][0])
+np_ERA5Data_inst_100m=Dataset(input_datasets_folder + "\\" + control_datasets.loc["100m_component_of_wind"][0])
+np_ERA5Data_inst_2m=Dataset(input_datasets_folder + "\\" + control_datasets.loc["2m_temperature"][0])
+np_ERA5Data_inst_z=Dataset(input_datasets_folder + "\\" + control_datasets.loc["geopotential"][0])
+np_ERA5Data_inst_ssrd=Dataset(input_datasets_folder + "\\" + control_datasets.loc["surface_solar_radiation_downwards"][0])
+np_ERA5Data_inst_albedo=Dataset(input_datasets_folder + "\\" + control_datasets.loc["albedo_for_diffuse_radiation"][0])
+np_ERA5Data_inst_dsr=Dataset(input_datasets_folder + "\\" + control_datasets.loc["direct_solar_radiation_at_surface"][0])
+pd_WindSpeed_to_Power = pd.read_csv(input_datasets_folder + "\\" + control_datasets.loc["three_iec_turbine_power_curves"][0] + '.csv', sep=",")
+AllCountries=pd.read_csv(input_datasets_folder + "\\" + control_datasets.loc["file_name_regions"][0] + '.csv',names=["country"], sep=";")
+hours_in_year=control_parameters.loc["hours_in_year"][0]
+Input_MSR_Folder=ControlPathsAndNames.loc["output_folder_msr_creator"][0]
+OutputFolder_UTCProfiles=ControlPathsAndNames.loc["output_folder"][0]
+OutputFolder_LocalTime=ControlPathsAndNames.loc["output_folder"][0]
+elevation_threshold=control_parameters.loc["elevation_threshold"][0]
+ResourceRasterCarryingSubFolderName="stage1_input_datasets"
+MSR_DataCarryingSubFolderName="stage6_attribution"
+SolarPVNameConvention="solarpv"
+WindNameConvention="wind"
 
 #load configurations
 RE_TechnologyList=[] # naming as per three technology names for which MSR creator code creates MSRs
 ResourceRasterNameList=[]
 
-if ControlConfigurations.loc["Run code for SolarPV"][0]==1:
+if ControlConfigurations.loc["run_code_for_solar_pv"][0]==1:
     RE_TechnologyList.append(SolarPVNameConvention)
-    ResourceRasterNameList.append(ControlPathsAndNames.loc["SolarPV_ResourceRasterName"][0])
-if ControlConfigurations.loc["Run code for Wind"][0]==1:
+    ResourceRasterNameList.append(control_datasets.loc["file_name_solarpv_resource_raster"][0])
+if ControlConfigurations.loc["run_code_for_wind"][0]==1:
     RE_TechnologyList.append(WindNameConvention)
-    ResourceRasterNameList.append(ControlPathsAndNames.loc["Wind_ResourceRasterName"][0])
-    WindTurbineHeight_meters = ControlConfigurations.loc["For wind, give wind turbine height (meters)"][0]
+    ResourceRasterNameList.append(control_datasets.loc["file_name_wind_resource_raster"][0])
+    WindTurbineHeight_meters = control_parameters.loc["wind_hub_height"][0]
 
-flag_Diagnosis= ControlConfigurations.loc["Produce hourly resource profiles for diagnostics"][0]
+flag_Diagnosis= 1 #ControlConfigurations.loc["Produce hourly resource profiles for diagnostics"][0]
 
 #code run time flags
 flag_RunBiasCorrCode = 1  # Not a user option
@@ -250,15 +276,15 @@ if not os.path.isdir(OutputFolder_LocalTime):
     os.makedirs(OutputFolder_LocalTime)
 
 for CountryCounter in range(0,len(AllCountries)):#country wise loop
-    country_withspaces=AllCountries.Ct[CountryCounter]
-    country = AllCountries.Ct[CountryCounter].replace(" ", "")
+    country_withspaces=AllCountries.country[CountryCounter]
+    country = AllCountries.country[CountryCounter].replace(" ", "")
     MSR_CountryFolder=Input_MSR_Folder+r"\%s"%country
 
-    OutputCountryFolder_UTC=OutputFolder_UTCProfiles + r"\%s" % country
+    OutputCountryFolder_UTC=OutputFolder_UTCProfiles + r"\%s" % country +"\\UTC_profiles"
     if not os.path.isdir(OutputCountryFolder_UTC):
         os.makedirs(OutputCountryFolder_UTC)
 
-    OutputCountryFolder_LocalTime = OutputFolder_LocalTime + r"\%s" % country
+    OutputCountryFolder_LocalTime = OutputFolder_LocalTime + r"\%s" % country +"\\local_time_profiles"
     if not os.path.isdir(OutputCountryFolder_LocalTime):
         os.makedirs(OutputCountryFolder_LocalTime)
 
@@ -269,36 +295,44 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
 
         #read RE MSR information
         try:
-            gpd_MSR_Attributes = gpd.read_file(MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_FinalMSRs.shp")
-            # get stats of resource value across each MSR as Json dictionary (dc)
-            dc_ResourceStatsAcrossMSR = zonal_stats(
-                                    MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_FinalMSRs.shp",
-                                    MSR_CountryFolder + '\\' + ResourceRasterCarryingSubFolderName + '\\' + ResourceRasterName + "_projected.tif",
-                                    stats="count min mean max median sum")
+            if RE==SolarPVNameConvention:
+                gpd_MSR_Attributes = gpd.read_file(MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_final_msrs.shp")
+                # get stats of resource value across each MSR as Json dictionary (dc)
+                dc_ResourceStatsAcrossMSR = zonal_stats(
+                                        MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_final_msrs.shp",
+                                        MSR_CountryFolder + '\\' + ResourceRasterCarryingSubFolderName + '\\' + ResourceRasterName + "_projected.tif",
+                                        stats="count min mean max median sum")
+            elif RE==WindNameConvention:
+                gpd_MSR_Attributes = gpd.read_file(MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_" + str(elevation_threshold) + "_final_msrs.shp")
+                # get stats of resource value across each MSR as Json dictionary (dc)
+                dc_ResourceStatsAcrossMSR = zonal_stats(
+                                        MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_" + str(elevation_threshold) + "_final_msrs.shp",
+                                        MSR_CountryFolder + '\\' + ResourceRasterCarryingSubFolderName + '\\' + RE + "_" + ResourceRasterName + "_projected.tif",
+                                        stats="count min mean max median sum")
             gpd_MSR_Attributes['Longitude'] =  gpd_MSR_Attributes.to_crs('EPSG:4326').centroid.x
             gpd_MSR_Attributes['Latitude'] =  gpd_MSR_Attributes.to_crs('EPSG:4326').centroid.y
             gpd_MSR_Attributes = gpd_MSR_Attributes.drop(['geometry'], axis=1)
 
 
             #find nearest neighbors of MSR coordinates in ERA5 data set
-            ERA5Locations=list(itertools.product(np_ERA5Data_inst.variables["latitude"][:],np_ERA5Data_inst.variables["longitude"][:]))
+            ERA5Locations=list(itertools.product(np_ERA5Data_inst_10m.variables["latitude"][:],np_ERA5Data_inst_10m.variables["longitude"][:]))
             MSR_CentroidLocations=list(zip(gpd_MSR_Attributes.Latitude,gpd_MSR_Attributes.Longitude))
             ERA5Grid = spatial.cKDTree(ERA5Locations)
             dist, indexes = ERA5Grid.query(MSR_CentroidLocations)
             ERA5Locations_near_MSR_CentroidLocations= np.array(ERA5Locations)[indexes]
             gpd_MSR_Attributes["ERA5Latitude"]=ERA5Locations_near_MSR_CentroidLocations[:,0]
             gpd_MSR_Attributes["ERA5Longitude"]=ERA5Locations_near_MSR_CentroidLocations[:,1]
-            np_lon = np_ERA5Data_inst.variables["longitude"][:]
-            np_lat = np_ERA5Data_inst.variables["latitude"][:]
+            np_lon = np_ERA5Data_inst_10m.variables["longitude"][:]
+            np_lat = np_ERA5Data_inst_10m.variables["latitude"][:]
 
 
             #Declare variables to run subprograms that get capacity factor profiles from resource values for each MSR
-            np_allMSR_HourlyCF=np.zeros((len(gpd_MSR_Attributes),8784))
+            np_allMSR_HourlyCF=np.zeros((len(gpd_MSR_Attributes),hours_in_year))
 
-            np_allMSR_HourlyWindSpeeds_corrected_ResultantVector = np.zeros((len(gpd_MSR_Attributes), 8784)) #m/s
-            np_allMSR_HourlyWindSpeeds_uncorrected_ResultantVector = np.zeros((len(gpd_MSR_Attributes), 8784))  # m/s
-            np_allMSR_HourlyGHI = np.zeros((len(gpd_MSR_Attributes), 8784)) #Wh
-            np_allMSR_HourlyGHI_corrected_Wh=np.zeros((len(gpd_MSR_Attributes), 8784))
+            np_allMSR_HourlyWindSpeeds_corrected_ResultantVector = np.zeros((len(gpd_MSR_Attributes), hours_in_year)) #m/s
+            np_allMSR_HourlyWindSpeeds_uncorrected_ResultantVector = np.zeros((len(gpd_MSR_Attributes), hours_in_year))  # m/s
+            np_allMSR_HourlyGHI = np.zeros((len(gpd_MSR_Attributes), hours_in_year)) #Wh
+            np_allMSR_HourlyGHI_corrected_Wh=np.zeros((len(gpd_MSR_Attributes), hours_in_year))
 
                 #initialize datasets for wind bias correction
             np_allMSR_ERA5_AnnualMean=np.zeros(len(gpd_MSR_Attributes))
@@ -319,8 +353,8 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                     lon = ERA5Locations_near_MSR_CentroidLocations[MSR_Counter, 1]
                     index_lat = np.where(np_lat == lat)[0][0]
                     index_lon = np.where(np_lon == lon)[0][0]
-                    u=np_ERA5Data_inst.variables["u100"][:,index_lat, index_lon]
-                    v=np_ERA5Data_inst.variables["v100"][:,index_lat, index_lon]
+                    u=np_ERA5Data_inst_100m.variables["u100"][:,index_lat, index_lon]
+                    v=np_ERA5Data_inst_100m.variables["v100"][:,index_lat, index_lon]
                     pd_allMSR_Hourly100mEffectiveWindSpeeds=pd_allMSR_Hourly100mEffectiveWindSpeeds.append (pd.DataFrame((u**2+v**2)**(1/2)).transpose(), ignore_index=True)
                 pd_Wind_GWA_MSR_Mean = pd.DataFrame(dc_ResourceStatsAcrossMSR)['mean'].fillna(pd.DataFrame(dc_ResourceStatsAcrossMSR)['mean'].mean())#double checked, as long the MSR ids are numbered 0,1,2..., this command puts right mean to right table cell
                 #get corrected 100m wind speeds, rows=MSRs, columns=hours
@@ -332,13 +366,13 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                 lon=ERA5Locations_near_MSR_CentroidLocations[MSR_Counter,1]
                 index_lat = np.where(np_lat == lat)[0][0]
                 index_lon = np.where(np_lon == lon)[0][0]
-                np_Hourly2meterTemperature = np_ERA5Data_inst.variables["t2m"][:, index_lat, index_lon]
+                np_Hourly2meterTemperature = np_ERA5Data_inst_2m.variables["t2m"][:, index_lat, index_lon]
 
                 if RE==SolarPVNameConvention:
-                    np_HourlyGHI = np_ERA5Data_accum.variables["ssrd"][:, index_lat, index_lon]
+                    np_HourlyGHI = np_ERA5Data_inst_ssrd.variables["ssrd"][:, index_lat, index_lon]
                     GSA_GHI_MSR_Mean=dc_ResourceStatsAcrossMSR[MSR_Counter]['mean']
                     if not GSA_GHI_MSR_Mean:
-                        GSA_GHI_MSR_Mean=np.sum(np_HourlyGHI)*(24/8784)
+                        GSA_GHI_MSR_Mean=np.sum(np_HourlyGHI)*(24/hours_in_year)
 
                     np_HourlyCF, GHI_corrected_wh, BiasCorrection_GHI_Adder_Wh, ERA5_GHI_OriginalAnnualYield=ComputeHourlyCF_SolarPV(GSA_GHI_MSR_Mean,np_Hourly2meterTemperature,np_HourlyGHI)
 
@@ -350,19 +384,19 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                     np_allMSR_HourlyGHI[MSR_Counter] = np_HourlyGHI
                     np_allMSR_HourlyGHI_corrected_Wh[MSR_Counter]=np_HourlyGHI_corrected_Wh
                     np_allMSR_GHI_ERA5OriginalAnnualYield[MSR_Counter] = ERA5_GHI_OriginalAnnualYield
-                    np_allMSR_GHI_GSA_MSR_Mean[MSR_Counter]= GSA_GHI_MSR_Mean*(8784/24) #converting per day yield of Solar GIS to annual
+                    np_allMSR_GHI_GSA_MSR_Mean[MSR_Counter]= GSA_GHI_MSR_Mean*(hours_in_year/24) #converting per day yield of Solar GIS to annual
                     np_allMSR_BiasCorrection_GHI_Adder_Wh[MSR_Counter]=BiasCorrection_GHI_Adder_Wh
 
                 if RE==WindNameConvention:
-                    np_HourlyU100mEastward=np_ERA5Data_inst.variables["u100"][:,index_lat, index_lon]
-                    np_HourlyV100mNorthward = np_ERA5Data_inst.variables["v100"][:, index_lat, index_lon]
-                    np_HourlyU10mEastward = np_ERA5Data_inst.variables["u10"][:, index_lat, index_lon]
-                    np_HourlyV10mNorthward = np_ERA5Data_inst.variables["v10"][:, index_lat, index_lon]
+                    np_HourlyU100mEastward=np_ERA5Data_inst_100m.variables["u100"][:,index_lat, index_lon]
+                    np_HourlyV100mNorthward = np_ERA5Data_inst_100m.variables["v100"][:, index_lat, index_lon]
+                    np_HourlyU10mEastward = np_ERA5Data_inst_10m.variables["u10"][:, index_lat, index_lon]
+                    np_HourlyV10mNorthward = np_ERA5Data_inst_10m.variables["v10"][:, index_lat, index_lon]
                     Wind_GWA_MSR_Mean=dc_ResourceStatsAcrossMSR[MSR_Counter]['mean']
                     BiasCorrEffectiveWindSpeeds= pd_allMSR_Hourly100m8784BiasCorrEffectiveWindSpeeds.iloc[MSR_Counter, :]
                     if not Wind_GWA_MSR_Mean:
                         Wind_GWA_MSR_Mean=pd.DataFrame(dc_ResourceStatsAcrossMSR)['mean'].mean()
-                    elevation=np_ERA5Data_inst.variables["z"][0, index_lat, index_lon]/9.80665 #see orography variable description in https://cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-single-levels-monthly-means?tab=overview
+                    elevation=np_ERA5Data_inst_z.variables["z"][0, index_lat, index_lon]/9.80665 #see orography variable description in https://cds.climate.copernicus.eu/cdsapp#!/dataset/reanalysis-era5-single-levels-monthly-means?tab=overview
 
                     np_HourlyCF, np_HourlyWindSpeeds_ResultantVector, np_HourlyWindSpeeds_UnCorrected_ResultantVector, ERA5_AnnualMean=ComputeHourlyCF_Wind(BiasCorrEffectiveWindSpeeds, np_HourlyU100mEastward, np_HourlyU10mEastward, np_HourlyV100mNorthward, np_HourlyV10mNorthward, WindTurbineHeight_meters, np_Hourly2meterTemperature, elevation, pd_WindSpeed_to_Power)
 
@@ -391,11 +425,11 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                     pd_output_diagnosis = pd.concat(
                         [pd_output, pd_SolarBiasInformation, pd.DataFrame(np_allMSR_HourlyGHI_corrected_Wh, columns=HourTags)], axis=1)
                     pd_output_diagnosis.to_csv(
-                        OutputCountryFolder_UTC+r"\%s %s BiasCorrected ResourceProfiles.csv" % (country,RE),index=False)
-                    print(r"\%s %s BiasCorrected ResourceProfiles.csv created" % (country,RE))
+                        OutputCountryFolder_UTC+r"\%s_bias_corrected_resource_profiles.csv" % RE,index=False)
+                    print(r"\%s_bias_corrected_resource_profiles.csv created" % RE)
 
                 pd_output = pd.concat([pd_output, pd_SolarBiasInformation, pd.DataFrame(np_allMSR_HourlyCF, columns=HourTags)], axis=1)
-                FileAddressCountryProfile_UTC=OutputCountryFolder_UTC + r"\%s %s CFs.csv" % (country, RE)
+                FileAddressCountryProfile_UTC=OutputCountryFolder_UTC + r"\%s_CF_profiles.csv" % RE
                 pd_output.to_csv(FileAddressCountryProfile_UTC, index=False)
                 print(r"UTC-->%s %s CFs.csv created" %(country, RE))
 
@@ -407,26 +441,27 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                     pd_output_diagnosis = pd.concat(
                         [pd_output, pd_WindBiasInformation, pd.DataFrame(np_allMSR_HourlyWindSpeeds_corrected_ResultantVector, columns=HourTags)], axis=1)
                     pd_output_diagnosis.to_csv(
-                        OutputCountryFolder_UTC+r"\%s %s %sm BiasCorrected ResourceProfiles.csv" % (country, RE, WindTurbineHeight_meters), index=False)
-                    print(r"\%s %s corrected resource profiles.csv created" % (country,RE))
+                        OutputCountryFolder_UTC+r"\%s_%sm_bias_corrected_resource_profiles.csv" % (RE, WindTurbineHeight_meters), index=False)
+                    print(r"\%s_%sm_bias_corrected_resource_profiles.csv created" % (RE, WindTurbineHeight_meters))
 
                     pd_output_diagnosis = pd.concat(
                         [pd_output, pd_WindBiasInformation, pd.DataFrame(np_allMSR_HourlyWindSpeeds_uncorrected_ResultantVector, columns=HourTags)], axis=1)
                     pd_output_diagnosis.to_csv(
-                        OutputCountryFolder_UTC + r"\%s %s %sm UnCorrected ResourceProfiles.csv" % (
-                        country, RE, WindTurbineHeight_meters), index=False)
-                    print(r"\%s %s uncorrected resource profiles.csv created" % (country, RE))
+                        OutputCountryFolder_UTC + r"\%s_%sm_uncorrected_resource_profiles.csv" % (RE, WindTurbineHeight_meters), index=False)
+                    # print(r"\%s_%sm_uncorrected_resource_profiles.csv created" % (RE, WindTurbineHeight_meters))
+                    #     (RE, WindTurbineHeight_meters), index=False)
+                    print(r"\%s_%sm_uncorrected_resource_profiles.csv created" % (RE, WindTurbineHeight_meters))
 
                 pd_output = pd.concat([pd_output, pd_WindBiasInformation, pd.DataFrame(np_allMSR_HourlyCF, columns=HourTags)], axis=1)
-                FileAddressCountryProfile_UTC=OutputCountryFolder_UTC+r"\%s %s %sm CFs.csv"%(country, RE, WindTurbineHeight_meters)
+                FileAddressCountryProfile_UTC=OutputCountryFolder_UTC+r"\%s_%sm_CF_profiles.csv"%(RE, WindTurbineHeight_meters)
                 pd_output.to_csv(FileAddressCountryProfile_UTC, index=False)
-                print(r"UTC-->%s %s CFs.csv created" %(country, RE))
+                print(r"UTC-->%s CFs.csv created" %(RE))
 
             pd_UTC = pd.read_csv(FileAddressCountryProfile_UTC)
 
             pd_LocalTime = CreateLocalTimeProfile(pd_UTC, pd_CountryUTC_offsets, country_withspaces)
 
-            pd_LocalTime.to_csv(OutputCountryFolder_LocalTime + "\\" + FileAddressCountryProfile_UTC.rsplit("\\", 1)[1])
+            pd_LocalTime.to_csv(OutputCountryFolder_LocalTime + "\\" + FileAddressCountryProfile_UTC.rsplit("\\", 1)[1], index=False)
             print(r"LocalTime-->%s" % FileAddressCountryProfile_UTC.rsplit("\\", 1)[1])
 
         except Exception as e:
