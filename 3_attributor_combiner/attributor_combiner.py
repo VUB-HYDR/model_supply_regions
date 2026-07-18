@@ -805,8 +805,8 @@ def plot_cf_composition(
         re_name = "Wind"
         colormap_name = "Greens"
         cf_column_name = f"CF{config.wind_hub_height}m"
-        bins = [-np.inf, 30, 35, 40, 45, 50, 55]
-        labels = ["≤ 30", "30–35", "40–45", "45–50", "50–55", "> 55"]
+        bins = [-np.inf, 30, 35, 40, 45, 50, 100]
+        labels = ["≤ 30", "30–35", "35–40", "40–45", "45–50", "> 50"]
     elif config.re_technology == "solarpv":
         re_name = "Solar PV"
         colormap_name = "Oranges"
