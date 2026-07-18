@@ -300,7 +300,7 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                 # get stats of resource value across each MSR as Json dictionary (dc)
                 dc_ResourceStatsAcrossMSR = zonal_stats(
                                         MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_final_msrs.shp",
-                                        MSR_CountryFolder + '\\' + ResourceRasterCarryingSubFolderName + '\\' + ResourceRasterName + "_projected.tif",
+                                        MSR_CountryFolder + '\\' + ResourceRasterCarryingSubFolderName + '\\' + RE + "_" + ResourceRasterName + "_projected.tif",
                                         stats="count min mean max median sum")
             elif RE==WindNameConvention:
                 gpd_MSR_Attributes = gpd.read_file(MSR_CountryFolder + '\\' + MSR_DataCarryingSubFolderName + '\\' + RE + "_" + str(elevation_threshold) + "_final_msrs.shp")
