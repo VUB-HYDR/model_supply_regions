@@ -969,6 +969,7 @@ def run_stage_1_prepare_input_datasets(
             str(dem_path),
             str(slope_path),
             "-p",
+            "-compute_edges"
         ],
         check=True,
     )
