@@ -355,7 +355,8 @@ for CountryCounter in range(0,len(AllCountries)):#country wise loop
                     index_lon = np.where(np_lon == lon)[0][0]
                     u=np_ERA5Data_inst_100m.variables["u100"][:,index_lat, index_lon]
                     v=np_ERA5Data_inst_100m.variables["v100"][:,index_lat, index_lon]
-                    pd_allMSR_Hourly100mEffectiveWindSpeeds=pd_allMSR_Hourly100mEffectiveWindSpeeds.append (pd.DataFrame((u**2+v**2)**(1/2)).transpose(), ignore_index=True)
+                    #pd_allMSR_Hourly100mEffectiveWindSpeeds = pd_allMSR_Hourly100mEffectiveWindSpeeds.append (pd.DataFrame((u**2+v**2)**(1/2)).transpose(), ignore_index=True)
+                    pd_allMSR_Hourly100mEffectiveWindSpeeds = pd.concat([pd_allMSR_Hourly100mEffectiveWindSpeeds, pd.DataFrame((u**2+v**2)**(1/2)).transpose()], ignore_index=True)
                 pd_Wind_GWA_MSR_Mean = pd.DataFrame(dc_ResourceStatsAcrossMSR)['mean'].fillna(pd.DataFrame(dc_ResourceStatsAcrossMSR)['mean'].mean())#double checked, as long the MSR ids are numbered 0,1,2..., this command puts right mean to right table cell
                 #get corrected 100m wind speeds, rows=MSRs, columns=hours
                 pd_allMSR_Hourly100m8784BiasCorrEffectiveWindSpeeds=develop_allMSR_8784BiasCorrEffectiveWindSpeeds(pd_allMSR_Hourly100mEffectiveWindSpeeds, pd_Wind_GWA_MSR_Mean)

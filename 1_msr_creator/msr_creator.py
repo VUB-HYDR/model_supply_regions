@@ -247,6 +247,12 @@ def build_msr_creator_config(
         technologies_to_run.append("wind")
     if bool(control_configurations.loc["run_code_for_offshore_wind"][0]):
         technologies_to_run.append("offshorewind")
+        
+    # error in case more than one tech selected
+    if np.size(technologies_to_run) > 1:
+        print('ERROR: more than one technology selected.')
+        print('Please select only one technology (solar pv, solar csp, wind) at a time.')
+        raise SystemExit
 
     roads_buffered_search=bool(
             control_configurations.loc["roads_buffered_search"][0]
