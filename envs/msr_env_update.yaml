@@ -19,5 +19,7 @@ dependencies:
   - rasterstats=0.20
   - shapely=2.0
   - openpyxl=3.1
+  - cftime=1.6.5
+  - netCDF4=1.7.2
   - gdal
   - pip
