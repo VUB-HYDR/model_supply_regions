@@ -1,8 +1,0 @@
-﻿param,mode
-Area sq.Km,sum
-Max Capacity MW,sum
-DistFromTL Km,wmean
-trCAPEX-kW,wmean
-Latitude,wmean
-Longitude,wmean
-IEC_Class,wmean_IEC
