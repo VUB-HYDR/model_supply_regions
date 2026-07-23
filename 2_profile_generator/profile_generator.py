@@ -246,7 +246,7 @@ OutputFolder_UTCProfiles = ControlPathsAndNames.loc["output_folder"][0] + '\\2_p
 OutputFolder_LocalTime = ControlPathsAndNames.loc["output_folder"][0] + '\\2_profile_generator'
 elevation_threshold = control_parameters.loc["elevation_threshold"][0]
 ResourceRasterCarryingSubFolderName = "stage1_input_datasets"
-MSR_DataCarryingSubFolderName = "stage6_attribution"
+MSR_DataCarryingSubFolderName = "stage5_attribution"
 SolarPVNameConvention = "solarpv"
 WindNameConvention = "wind"
 

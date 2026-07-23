@@ -258,7 +258,7 @@ def prepare_region_context(
         Path(str(config.output_folder))
         / "1_msr_creator"
         / region_name_without_spaces
-        / "stage6_attribution"
+        / "stage5_attribution"
     )
     if config.re_technology == "solarpv":
         output_msr_creator = Path(
