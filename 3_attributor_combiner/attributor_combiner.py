@@ -98,7 +98,7 @@ class RegionPaths:
 
 @dataclass
 class RegionContext:
-    """Technology-specific names and paths used during attribution."""
+    """Region-specific names and paths used during attribution."""
 
     region_name_with_spaces: str
     region_name_without_spaces: str
@@ -153,7 +153,7 @@ def build_attributor_combiner_config(
     """Build run-wide Attributor Combiner configuration from control DataFrames.
 
     Returns:
-        AttributorCombinerConfig: Run-wide settings used by all countries and stages.
+        AttributorCombinerConfig: Run-wide settings used by all regions and technologies.
     """
 
     control_paths = control["control_paths"]
@@ -254,7 +254,7 @@ def prepare_region_context(
         )
     output_resource_raster = matches[0]
 
-    output_subfolder_attribution = Path(
+    output_subfolder_msr_creator = Path(
         Path(str(config.output_folder))
         / "1_msr_creator"
         / region_name_without_spaces
@@ -262,12 +262,12 @@ def prepare_region_context(
     )
     if config.re_technology == "solarpv":
         output_msr_creator = Path(
-            output_subfolder_attribution
+            output_subfolder_msr_creator
             / f"{config.re_technology}_final_msrs.shp"
         )
     elif config.re_technology == "wind":
         output_msr_creator = Path(
-            output_subfolder_attribution
+            output_subfolder_msr_creator
             / f"{config.re_technology}_{config.elevation_threshold}_final_msrs.shp"
         )
     
