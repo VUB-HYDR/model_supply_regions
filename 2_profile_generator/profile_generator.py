@@ -35,9 +35,9 @@ class ProfileGeneratorConfig:
     technologies_to_run: list[str]
     re_technology: str
     # produce_diagnostics: bool
-    hours_in_year: int
     wind_hub_height: int
-    elevation_threshold: int
+    reference_year: int
+    weather_years: list[int]
     file_name_UTC_offsets: str
     file_name_era5_wind_10m: str
     file_name_era5_wind_100m: str
@@ -53,9 +53,9 @@ class RegionPaths:
 
     output_folder_profile_generator_utc: Path
     output_folder_profile_generator_lt: Path
-    output_folder_profile_generator_diagnostics: Path
     output_path_utc: Path
     output_path_lt: Path
+    output_folder_profile_generator_diagnostics: Path
     output_msr_creator: Path
     output_resource_raster: Path
 
@@ -160,9 +160,18 @@ def build_profile_generator_config(
     file_name_resource_raster = str(control_datasets.loc["file_name_resource_raster"][0])
 
     # parameters
-    hours_in_year = int(control_parameters.loc["hours_in_year"][0])
     wind_hub_height = int(control_parameters.loc["wind_hub_height"][0])
-    elevation_threshold = int(control_parameters.loc["elevation_threshold"][0])
+    reference_year = int(control_parameters.loc["reference_year"][0])
+    weather_years = [int(year) 
+                     for year in str(
+                         control_parameters.loc["weather_years"][0]).split(";")
+                    ]
+
+    if reference_year not in weather_years:
+        raise ValueError(
+            f"Reference year {reference_year} is not included in the list of weather years: {weather_years}"
+        )
+    weather_years = [reference_year] + [year for year in weather_years if year != reference_year]
 
     return ProfileGeneratorConfig(
         control_file=control_file,
@@ -182,9 +191,9 @@ def build_profile_generator_config(
         file_name_era5_geopotential=file_name_era5_geopotential,
         file_name_era5_ssrd=file_name_era5_ssrd,
         file_name_resource_raster=file_name_resource_raster,
-        hours_in_year=hours_in_year,
         wind_hub_height=wind_hub_height,
-        elevation_threshold=elevation_threshold,
+        reference_year=reference_year,
+        weather_years=weather_years
     )
 
 def prepare_region_context(
@@ -221,17 +230,10 @@ def prepare_region_context(
         / region_name_without_spaces
         / "stage6_attribution"
     )
-
-    if config.re_technology == "solarpv":
-        output_msr_creator = Path(
-            output_subfolder_msr_creator
-            / f"{config.re_technology}_final_msrs.shp"
-        )
-    elif config.re_technology == "wind":
-        output_msr_creator = Path(
-            output_subfolder_msr_creator
-            / f"{config.re_technology}_{config.elevation_threshold}_final_msrs.shp"
-        )
+    output_msr_creator = Path(
+        output_subfolder_msr_creator
+        / f"{config.re_technology}_final_msrs.shp"
+    )
 
     output_folder_profile_generator_lt = Path(
         Path(str(config.output_folder))
@@ -253,31 +255,15 @@ def prepare_region_context(
         / "diagnostics"
     )
 
-    if config.re_technology == "solarpv":
-        output_path_utc = Path(
-            output_folder_profile_generator_utc
-            / f"{config.re_technology}_CF_profiles.csv"
-        )
-        output_path_lt = Path(
-            output_folder_profile_generator_lt
-            / f"{config.re_technology}_CF_profiles.csv"
-        )
-    elif config.re_technology == "wind":
-        output_path_utc = Path(
-            output_folder_profile_generator_utc
-            / f"{config.re_technology}_{config.wind_hub_height}m_CF_profiles.csv"
-        )
-        output_path_lt = Path(
-            output_folder_profile_generator_lt
-            / f"{config.re_technology}_{config.wind_hub_height}m_CF_profiles.csv"
-        )
+    output_path_utc = output_folder_profile_generator_utc / f"{config.re_technology}_CF_profiles.csv"
+    output_path_lt = output_folder_profile_generator_lt / f"{config.re_technology}_CF_profiles.csv"
 
     paths = RegionPaths(
         output_folder_profile_generator_lt=output_folder_profile_generator_lt,
         output_folder_profile_generator_utc=output_folder_profile_generator_utc,
-        output_folder_profile_generator_diagnostics=output_folder_profile_generator_diagnostics,
-        output_path_utc=output_path_utc,
         output_path_lt=output_path_lt,
+        output_path_utc=output_path_utc,
+        output_folder_profile_generator_diagnostics=output_folder_profile_generator_diagnostics,
         output_resource_raster=output_resource_raster,
         output_msr_creator=output_msr_creator
     )
@@ -338,59 +324,44 @@ def generate_profiles(
         f"Generating profiles | region={context.region_name_with_spaces} "
         f"| technology={config.re_technology}"
     )
-
-    paths = context.paths
     
     if config.re_technology == "solarpv":
 
-        era5 = open_era5(config, context)
-
-
-        ds = select_nearest_era5_at_msrs(context, era5)
-
         gsa_mean = calculate_resource_mean_at_msrs(context)
-
+        era5 = open_era5(config)
+        ds = select_nearest_era5_at_msrs(context, era5)
         ds = ds.assign(gsa_ghi_mean=gsa_mean)
         ds = bias_correct_solar_ghi(config, ds)
         ds = calculate_solarpv_capacity_factor(ds)
-
+        ds_lt = create_local_time_profiles(ds, config, context)
+        write_output(ds, ds_lt, config, context)
 
     elif config.re_technology == "wind":
 
-        era5 = open_era5(config, context)
-
-        ds = select_nearest_era5_at_msrs(context, era5)
-
         gwa_mean = calculate_resource_mean_at_msrs(context)
-
+        era5 = open_era5(config)
+        ds = select_nearest_era5_at_msrs(context, era5)
         ds = ds.assign(gwa_mean_wind_speed_100m=gwa_mean)
         ds = calculate_wind_speed(ds)
-        ds = bias_correct_wind_speed(ds)
+        a_r, b_r, y_r = fit_wind_bias_correction(ds, config)
+        ds = bias_correct_wind_speed(ds, a_r, b_r, y_r)
         ds = calculate_wind_shear(ds)
         ds = extrapolate_wind_speed_to_hub_height(ds, config)
         ds = air_density_correction(ds)
         ds = assign_iec_class(ds)
         ds = calculate_wind_capacity_factor(ds, config)
-
-    ds_lt = create_local_time_profiles(ds, config, context)
-    output_utc, output_lt = write_output(ds, ds_lt, config, paths)
-    output_utc.to_csv(paths.output_path_utc, index=False, sep=";")
-    output_lt.to_csv(paths.output_path_lt, index=False, sep=";")
-
-    plot_duration_curve(output_utc, config, context)
-    plot_fourier_spectrum(output_utc, config, context)
-    plot_daily_profiles(output_lt, config, context)
-    plot_seasonal_profiles(output_lt, config, context)
-
+        ds_lt = create_local_time_profiles(ds, config, context)
+        write_output(ds, ds_lt, config, context)
+            
     LOGGER.info(
         f"Profiles generation complete | region={context.region_name_with_spaces} "
-        f"| technology={config.re_technology} | path={paths.output_path_utc} | path_lt={paths.output_path_lt}"
+        f"| technology={config.re_technology} "
     )
+    ds.close()
 
 
 def open_era5(
     config: ProfileGeneratorConfig,
-    context: RegionContext,
 ) -> xr.Dataset:
     """Open and merge ERA5 variables."""
 
@@ -407,27 +378,46 @@ def open_era5(
             config.file_name_era5_geopotential,
         ]
     
-    datasets = []
-    for filename in filenames:
-        era5_path = Path(
-            Path(str(config.input_folder_datasets))
-            / f"{filename}.nc"
-        )
-        var_ds = xr.open_dataset(era5_path)
-        datasets.append(var_ds)
-    
-    ds = xr.merge(datasets, join="exact")
-    
+    ds_yrs = []
 
-    if not config.hours_in_year == ds.sizes["valid_time"]:
+    for year in config.weather_years:
+        
+        ds_vars = []
+    
+        for fn in filenames:
+            
+            era5_path = (
+                config.input_folder_datasets
+                / f"{year}_{fn}.nc"
+            )
+
+            ds_var = xr.open_dataset(era5_path)
+            
+            ds_vars.append(ds_var)                  # collect variables
+        
+        ds_yr = xr.merge(ds_vars, join="exact")     # combine variables for the year
+        ds_yrs.append(ds_yr)                        # collect years
+
+    ds = xr.concat(                                 # combine years
+        ds_yrs,
+        dim="valid_time",
+        data_vars="minimal",
+        coords="minimal",
+        compat="override",
+        join="exact",
+    )
+    ds = ds.sortby("valid_time")
+
+    yrs = np.unique(ds["valid_time"].dt.year.values).tolist()
+    missing_yrs = sorted(set(config.weather_years) - set(yrs))
+    if missing_yrs:
         raise ValueError(
-            "Inconsistent time dimension:" 
-            f"expected {config.hours_in_year}, "
-            f"found {ds.sizes['valid_time']} in ERA5 dataset"
+            f"Missing ERA5 data for years {missing_yrs}"
         )
     
     LOGGER.info(
-        f"ERA5 datasets opened | "
+        f"ERA5 datasets opened |"
+        f" years={np.unique(ds['valid_time'].dt.year.values).tolist()} |"
         f" variables={list(ds.data_vars)} |"
         f" timesteps={ds.sizes['valid_time']} |"
         f" latitudes=[{ds['latitude'].min().item():.2f}, {ds['latitude'].max().item():.2f}] |"
@@ -518,6 +508,8 @@ def bias_correct_solar_ghi(
 ) -> xr.Dataset:
     """Apply additive bias-correction."""
     
+    # TODO: How to apply multi-year bisd-correction?
+
     ghi = ds["ssrd"]                               # J/m2
     ghi_kwh_m2 = (ghi / 3600000).clip(min=0)       # J/m2 -> kWh/m2
     era5_annual_ghi = (                            # kWh/m2/yr
@@ -526,10 +518,11 @@ def bias_correct_solar_ghi(
         .rename("era5_annual_ghi")
         )
 
+    hours_in_year = ds.sizes["valid_time"]
     gsa_ghi = ds["gsa_ghi_mean"]                   # kWh/m2/day
     gsa_annual_ghi = (                             # kWh/m2/yr
         gsa_ghi 
-        * (config.hours_in_year / 24)
+        * (hours_in_year / 24)
     ).rename("gsa_annual_ghi")
 
     annual_bias_ghi = gsa_annual_ghi - era5_annual_ghi
@@ -649,69 +642,114 @@ def calculate_wind_speed(
         mean_wind_speed_100m=mean_wind_speed_100m,
     )
 
+def fit_wind_bias_correction(
+    ds: xr.Dataset,
+    config: ProfileGeneratorConfig
+):
+    """Fit linear regression for empirical quantile mapping bias-correction.
 
-def bias_correct_wind_speed(
-    ds: xr.Dataset
-) -> xr.Dataset:
-    """Apply empirical quantile mapping bias-correction."""
-
-    raw = ds["wind_speed_100m"].transpose("msr", "valid_time")
-    gwa_mean = ds["gwa_mean_wind_speed_100m"].to_numpy()
+    Fit one linear regression for each rank of the sorted wind speeds across all MSRs in the region in the reference year.
+    """
+    # Select reference year
+    ds_ref = ds.sel(valid_time=ds.valid_time.dt.year == config.reference_year)
     
-    # TODO: Include fallback for missing GWA mean values
+    # ERA5 wind speed time series at 100m for each MSR (msr, valid_time)
+    raw = (
+        ds_ref["wind_speed_100m"]
+        .transpose("msr", "valid_time")
+        .to_numpy()
+    )
 
-    if raw.sizes["msr"] == 1:
-        scale = (
-            ds["gwa_mean_wind_speed_100m"]
-            / raw.mean(dim="valid_time")
-        )
-        bc_wind_speed_100m = raw * scale
-        
-        return ds.assign(
-            bc_wind_speed_100m=bc_wind_speed_100m
-            .transpose("valid_time", "msr")
-            .rename("bc_wind_speed_100m")
-        )
+    # annual ERA5 mean wind speed for each MSR (msr,)
+    x = raw.mean(axis=1)
 
-    values = raw.to_numpy()
+    # sorted wind speeds for each MSR (msr, valid_time)
+    # y[i ,k] = wind speed at rank k for MSR i
+    y = np.sort(raw, axis=1)
 
-    x = values.mean(axis=1)
-    y = np.sort(values, axis=1)
-
+    # mean annual ERA5 wind speed across all MSRs (scalar)
     x_mean = x.mean()
+
+    # mean wind speed across MSRs for each sorted rank (valid_time,)
     y_mean = y.mean(axis=0)
 
-    slope = (
+    # slope 
+    a = (
         np.sum(
             (x - x_mean)[:, None] * (y - y_mean[None, :]),
             axis=0)
         / np.sum((x - x_mean) ** 2)
     )
 
-    intercept = y_mean - slope * x_mean
+    # intercept
+    b = y_mean - a * x_mean
 
-    corrected_sorted = (
-        slope[None, :] * gwa_mean[:, None] 
-        + intercept[None, :]
+    LOGGER.info(
+        f"Wind speed bias-correction fitted "
+        f"| reference year={config.reference_year} "
     )
 
-    order = np.argsort(
-        values,
-        axis=1,
-        kind="stable"
-    )
+    return a, b, y
 
-    inverse_order = np.argsort(
-        order,
-        axis=1,
-        kind="stable",
-    )
+def bias_correct_wind_speed(
+    ds: xr.Dataset,
+    a_r: np.ndarray, b_r: np.ndarray, y_r: np.ndarray
+) -> xr.Dataset:
+    """Apply empirical quantile mapping bias-correction to the target year.
 
-    bc_values = np.take_along_axis(
-        corrected_sorted,
-        inverse_order,
-        axis=1
+    Interpolate the slope and intercept for each MSR and target-year hour 
+    based on the fitted regression from the reference year.    
+    """
+
+    raw = (
+        ds["wind_speed_100m"]
+        .transpose("msr", "valid_time")
+        .to_numpy()
     )
+    
+    gwa_mean = ds["gwa_mean_wind_speed_100m"].to_numpy()
+    
+    # TODO: Include fallback for missing GWA mean values
+
+    # Regression across MSRs cannot be applied for one MSR
+    # Instead, apply simple scaling  
+    if raw.shape[0] == 1:
+        scale = gwa_mean[0] / raw[0].mean()
+        bc_values = raw * scale
+    
+    else:
+
+        # interpolated slopes (a) and intercepts (b) for each MSR and target-year hour
+        a_t = np.empty_like(raw, dtype=float)
+        b_t = np.empty_like(raw, dtype=float)
+
+        for msr_idx in range(raw.shape[0]):
+            
+            # sorted wind speeds for one MSR from reference year (valid_time_r,)
+            y_r_idx = y_r[msr_idx]
+            
+            # wind speeds for one MSR from target year (valid_time_t,)
+            z_t_idx = raw[msr_idx]
+
+            # interpolate slope for each hour in target year.
+            a_t[msr_idx] =np.interp(
+                x=z_t_idx,
+                xp=y_r_idx,
+                fp=a_r,
+            )
+
+            # interpolate intercept for each hour in target year
+            b_t[msr_idx] = np.interp(
+                x=z_t_idx,
+                xp=y_r_idx,
+                fp=b_r,
+            )
+
+
+        bc_values = (
+            a_t * gwa_mean[:, None] 
+            + b_t
+        ).clip(min=0)
 
     bc_wind_speed_100m = xr.DataArray(
         bc_values,
@@ -725,7 +763,7 @@ def bias_correct_wind_speed(
 
     LOGGER.info(
         f"Wind speed bias-correction applied "
-        f"| mean ERA5 wind speed={raw.mean(dim='valid_time').mean():.2f} m/s "
+        # f"| mean ERA5 wind speed={raw.mean(dim='valid_time').mean():.2f} m/s "
         f"| mean GWA wind speed={gwa_mean.mean():.2f} m/s"
     )
 
@@ -923,7 +961,13 @@ def create_local_time_profiles(
 
     offset = utc_offsets[utc_offsets.Country == context.region_name_with_spaces].Hours.iloc[0]
 
-    ds_local = ds.roll(valid_time=offset, roll_coords=False)
+    # TODO: roll function rotates values along the entire multi-year time-axis, 
+    # which may not be correct for multi-year datasets.
+    # ds_local = ds.roll(valid_time=offset, roll_coords=False)
+    # Instead, use assign_coords to shift the valid_time coordinate by the offset in hours.
+    ds_local = ds.assign_coords(
+        valid_time=ds["valid_time"] + pd.to_timedelta(offset, unit="h")
+    )
 
     LOGGER.info(
         f"Local time profiles created "
@@ -936,21 +980,19 @@ def write_output(
     ds: xr.Dataset,
     ds_lt: xr.Dataset,
     config: ProfileGeneratorConfig,
-    paths: dict
+    context: RegionContext,
 ):
     """Combine attributes and profiles into pandas DataFrames."""
 
+
     profiles = ds["capacity_factor"].transpose("msr", "valid_time").to_pandas().reset_index(drop=True).round(3)
     profiles_lt = ds_lt["capacity_factor"].transpose("msr", "valid_time").to_pandas().reset_index(drop=True).round(3)
-    profiles.columns = [
-        f"H{hr}" for hr in range(1, config.hours_in_year + 1)
-    ]
-    profiles_lt.columns = [
-        f"H{hr}" for hr in range(1, config.hours_in_year + 1)
-    ]
+
+    profiles.columns = pd.to_datetime(ds["valid_time"].to_numpy()).strftime("%Y-%m-%d %H:%M")
+    profiles_lt.columns = pd.to_datetime(ds_lt["valid_time"].to_numpy()).strftime("%Y-%m-%d %H:%M")
 
     attributes = (
-        gpd.read_file(paths.output_msr_creator)
+        gpd.read_file(context.paths.output_msr_creator)
         .drop(columns="geometry")
         .rename(columns={"FID": "MSR_ID"})
         .set_index("MSR_ID")
@@ -991,15 +1033,28 @@ def write_output(
         ],
         axis=1
     )
+    
+    output_utc.to_csv(
+        context.paths.output_path_utc, 
+        index=False, 
+        sep=";"
+    )
+    output_lt.to_csv(
+        context.paths.output_path_lt,  
+        index=False, 
+        sep=";"
+    )
 
-    return output_utc, output_lt
 
-# TODO: Add plotting functions
+    # plot_duration_curve(output_utc, config, context)
+    # plot_fourier_spectrum(output_utc, config, context)
+    plot_daily_profiles(output_lt, config, context)
+    plot_seasonal_profiles(output_lt, config, context)  
 
 def plot_duration_curve(
     df: pd.DataFrame,
     config: ProfileGeneratorConfig,
-    context: RegionContext
+    context: RegionContext,
 ) -> None:
     """Plot duration curve for first MSR in the output DataFrame."""
 
@@ -1064,7 +1119,7 @@ def plot_duration_curve(
 def plot_fourier_spectrum(
     df: pd.DataFrame,
     config: ProfileGeneratorConfig,
-    context: RegionContext
+    context: RegionContext,
 ) -> None:
     """Plot fourier spectrum for first MSR in the output DataFrame."""
 
@@ -1153,7 +1208,7 @@ def plot_fourier_spectrum(
 def plot_daily_profiles(
     df: pd.DataFrame,
     config: ProfileGeneratorConfig,
-    context: RegionContext
+    context: RegionContext,
 ) -> None:
     """Plot daily profiles for first MSR in the output DataFrame."""
 
@@ -1170,34 +1225,81 @@ def plot_daily_profiles(
     )
 
     df = df.copy()
-    hour_col = [c for c in df.columns if c.startswith("H")]
-    profile = df.loc[:, hour_col].iloc[0].to_numpy(dtype=float) * 100
-
-    daily_profiles = profile.reshape(-1, 24)
-    mean = daily_profiles.mean(axis=0)
-
-    fig, ax = plt.subplots(
-        figsize=(6, 3),
+    profile_col = df.filter(
+        regex=r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$"
+    ).columns
+    timestamps = pd.to_datetime(
+        profile_col,
+        format="%Y-%m-%d %H:%M",
     )
 
-    ax.plot(
-        np.arange(24),
-        mean,
-        color=color,
-        linewidth=2,
-        label="Mean"
+    capacities = df["CapacityMW"].to_numpy(dtype=float)
+
+    w_profile = np.average(
+        df[profile_col].to_numpy(dtype=float),
+        axis=0,
+        weights=capacities
+    ) * 100
+
+    profile = pd.DataFrame(
+        {
+            "capacity_factor": w_profile,
+            "month": timestamps.month,
+            "hour": timestamps.hour,
+        },
+        index=timestamps
     )
 
-    ax.set_xlabel("Hour of day")
-    ax.set_ylabel("Capacity factor (%)")
-    ax.set_xlim(0, 23)
-    ax.set_ylim(0, 110)
-    ax.set_xticks(range(0, 24, 3))
+    stats = (
+        profile.groupby(["month", "hour"])["capacity_factor"]
+        .agg(["mean", "min", "max"])
+    )
 
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    month_name = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    ]
+
+    fig, axes = plt.subplots(
+        nrows=3,
+        ncols=4,
+        figsize=(12, 8),
+        sharex=True,
+        sharey=True,
+    )
+
+    for month, ax in enumerate(axes.flat, start=1):
+
+        monthly = stats.loc[month]
+
+        ax.plot(
+            monthly.index,
+            monthly["mean"],
+            color=color,
+            linewidth=2,
+            label="Mean"
+        )
+
+        ax.fill_between(
+            monthly.index,
+            monthly["min"],
+            monthly["max"],
+            color=color,
+            alpha=0.2,
+            label="Min-Max range"
+        )
+
+        ax.set_title(month_name[month - 1])
+        ax.set_xlim(0, 23)
+        ax.set_ylim(0, 110)
+        ax.set_xticks(range(0, 24, 3))
+
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
     
-    ax.set_title(
+    fig.supxlabel("Hour of day")
+    fig.supylabel("Capacity weighted capacity factor (%)")
+    fig.suptitle(
         f"{context.region_name_with_spaces} daily {name} profile"
         )
     
@@ -1212,7 +1314,7 @@ def plot_daily_profiles(
     plt.close(fig)
 
     LOGGER.info(
-        f"Daily profile plot written | "
+        f"Monthly daily profile plot written | "
         f"region={context.region_name_with_spaces} | "
         f"technology={config.re_technology} | "
         f"path={output_path}"
@@ -1221,7 +1323,7 @@ def plot_daily_profiles(
 def plot_seasonal_profiles(
     df: pd.DataFrame,
     config: ProfileGeneratorConfig,
-    context: RegionContext
+    context: RegionContext,
 ) -> None:
     """Plot seasonal profiles for first MSR in the output DataFrame."""
 
@@ -1232,30 +1334,34 @@ def plot_seasonal_profiles(
         color = "green"
         name = "Wind"
 
-    if config.hours_in_year == 8760:
-        year = 2021
-    elif config.hours_in_year == 8784:
-        year = 2020
-
     output_path = (
         context.paths.output_folder_profile_generator_diagnostics
         / f"{config.re_technology}_seasonal_profiles.png"
     )
 
     df = df.copy()
-    hour_col = [c for c in df.columns if c.startswith("H")]
-    profile = df.loc[:, hour_col].iloc[0].to_numpy(dtype=float) * 100
-    idx = pd.date_range(
-        start=f"{year}-01-01 00:00",
-        periods=len(profile),
-        freq="h"
+    profile_col = df.filter(
+        regex=r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$"
+    ).columns
+    timestamps = pd.to_datetime(
+        profile_col,
+        format="%Y-%m-%d %H:%M",
     )
-    series = pd.Series(profile, index=idx, dtype=float)
 
-    mean = (
+    capacities = df["CapacityMW"].to_numpy(dtype=float)
+
+    w_profile = np.average(
+        df[profile_col].to_numpy(dtype=float),
+        axis=0,
+        weights=capacities
+    ) * 100
+
+    series = pd.Series(w_profile, index=timestamps, dtype=float)
+
+    monthly = (
         series.groupby(series.index.month)
-        .mean()
-        .to_numpy()
+        .agg(["mean", "min", "max"])
+        .reindex(range(1, 13))
     )
 
     fig, ax = plt.subplots(
@@ -1264,10 +1370,18 @@ def plot_seasonal_profiles(
 
     ax.plot(
         np.arange(1,13),
-        mean,
+        monthly["mean"],
         color=color,
         linewidth=2,
         label="Mean"
+    )
+    ax.fill_between(
+        np.arange(1,13),
+        monthly["min"],
+        monthly["max"],
+        color=color,
+        alpha=0.2,
+        label="Min-Max range",
     )
 
     ax.set_xlabel("Month of year")
@@ -1287,6 +1401,8 @@ def plot_seasonal_profiles(
         f"{context.region_name_with_spaces} seasonal {name} profile"
         )
     
+    ax.legend(frameon=False, loc="upper left")
+    
     plt.tight_layout()
 
     fig.savefig(
@@ -1303,7 +1419,6 @@ def plot_seasonal_profiles(
         f"technology={config.re_technology} | "
         f"path={output_path}"
     )
-# TODO: Add multiple-year processing
 
 def main() -> None:
     """Load control inputs and run the Profile Generator workflow."""
