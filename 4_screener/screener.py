@@ -38,7 +38,6 @@ class ScreenerConfig:
     time_profile: str
     area_cutoff_perc: dict[str, pd.DataFrame]
     add_cf_profiles: bool
-    elevation_threshold: int
 
 @dataclass
 class RegionPaths:
@@ -145,7 +144,6 @@ def build_screener_config(
             sep=";"
         )
 
-    elevation_threshold = int(control_parameters.loc["elevation_threshold"][0])
     add_cf_profiles = bool(control_configurations.loc["add_cf_profiles"][0])
     local_time_profile = bool(control_configurations.loc["local_time_profile"][0])
     if local_time_profile:
@@ -166,7 +164,6 @@ def build_screener_config(
         area_cutoff_perc=area_cutoff_perc,
         add_cf_profiles=add_cf_profiles,
         time_profile=time_profile,
-        elevation_threshold=elevation_threshold,
     )
 
 def prepare_region_context(
@@ -190,41 +187,16 @@ def prepare_region_context(
         / region_name_without_spaces
         / config.time_profile
     )
-    matches = list(output_folder_profile_generator.glob(f"{config.re_technology}*CF_profiles.csv"))
-    if not matches:
-        raise FileNotFoundError(
-            f"No CF profile found for {region_name} "
-            f"and technology {config.re_technology} in {output_folder_profile_generator}"
-        )
-    if len(matches) > 1:
-        raise FileExistsError(
-            f"Multiple CF profiles found for {region_name} "
-            f"and technology {config.re_technology} in {output_folder_profile_generator}"
-        )
-    output_profile_generator = matches[0]
+    output_profile_generator = Path(
+        output_folder_profile_generator / f"{config.re_technology}_CF_profiles.csv"
+    )
 
     output_folder_attributor_combiner = Path(
         Path(str(config.output_folder))
         / "3_attributor_combiner"
         / region_name_without_spaces
     )
-
-
-    if config.re_technology == "solarpv":
-        matches = list(output_folder_attributor_combiner.glob(f"{config.re_technology}_prescreen.shp"))
-    elif config.re_technology == "wind":
-        matches = list(output_folder_attributor_combiner.glob(f"{config.re_technology}_{config.elevation_threshold}_prescreen.shp"))
-    if not matches:
-        raise FileNotFoundError(
-            f"No msr shapefile found for {region_name_without_spaces} "
-            f"and technology {config.re_technology} in {output_folder_attributor_combiner}"
-        )
-    if len(matches) > 1:
-        raise FileExistsError(
-            f"Multiple msr shapefiles found for {region_name_without_spaces} "
-            f"and technology {config.re_technology} in {output_folder_attributor_combiner}"
-        )
-    output_attributor_combiner = matches[0]
+    output_attributor_combiner = Path(output_folder_attributor_combiner/f"{config.re_technology}_prescreen.shp")
 
     output_folder_screener = Path(
         Path(str(config.output_folder))
