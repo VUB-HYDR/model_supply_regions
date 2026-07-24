@@ -14,44 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import geopandas as gpd
-from matplotlib.style import context
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Patch
 import pandas as pd
 from rasterstats import zonal_stats
-from shapely.geometry import (
-    LineString,
-    MultiLineString,
-    MultiPoint,
-    MultiPolygon,
-    Point,
-    Polygon,
-)
-from shapely.geometry.base import BaseGeometry, BaseMultipartGeometry
-
-
-def _disable_shapely_array_interface():
-    """Compatibility workaround for old Shapely with newer NumPy."""
-
-    def _raise_attribute_error(self):
-        raise AttributeError("__array_interface__ is intentionally disabled")
-
-    geometry_classes = (
-        BaseGeometry,
-        BaseMultipartGeometry,
-        Point,
-        LineString,
-        Polygon,
-        MultiPoint,
-        MultiLineString,
-        MultiPolygon,
-    )
-
-    for geometry_class in geometry_classes:
-        geometry_class.__array_interface__ = property(
-            _raise_attribute_error
-        )
 
 CONTROL_FILE_NAME = "control_file_attributor_combiner.xlsx"
 PATHS_SHEET = "paths"
@@ -80,10 +47,10 @@ class AttributorCombinerConfig:
     hours_in_year: int
     days_in_year: int
     wind_hub_height: int
-    elevation_threshold: int
     reference_plant_capacity: int
     solar_pv_loss_adjustment: float
     wind_loss_adjustment: float
+    weather_years: list[int]
 
 
 @dataclass
@@ -198,12 +165,15 @@ def build_attributor_combiner_config(
         time_profile = "utc_profiles"
 
     wind_hub_height = int(control_parameters.loc["wind_hub_height"][0])
-    elevation_threshold = int(control_parameters.loc["elevation_threshold"][0])
     hours_in_year = int(control_parameters.loc["hours_in_year"][0])
     days_in_year = int(control_parameters.loc["days_in_year"][0])
     reference_plant_capacity = int(control_parameters.loc["reference_plant_capacity"][0])
     solar_pv_loss_adjustment = float(control_parameters.loc["solarpv_loss_adjustment"][0]) / 100
     wind_loss_adjustment = float(control_parameters.loc["wind_loss_adjustment"][0]) / 100
+    weather_years = [int(year) 
+                     for year in str(
+                         control_parameters.loc["weather_years"][0]).split(";")
+                    ]
 
     return AttributorCombinerConfig(
         control_file=control_file,
@@ -219,12 +189,12 @@ def build_attributor_combiner_config(
         technologies_to_run=technologies_to_run,
         time_profile=time_profile,
         wind_hub_height=wind_hub_height,
-        elevation_threshold=elevation_threshold,
         hours_in_year=hours_in_year,
         days_in_year=days_in_year,
         reference_plant_capacity=reference_plant_capacity,
         solar_pv_loss_adjustment=solar_pv_loss_adjustment,
         wind_loss_adjustment=wind_loss_adjustment,
+        weather_years=weather_years,
     )
 
 def prepare_region_context(
@@ -241,18 +211,7 @@ def prepare_region_context(
             / region_name_without_spaces
             / "stage1_input_datasets"
     )
-    matches = list(output_subfolder_resource_raster.glob(f"{config.re_technology}_{config.file_name_resource_raster}_projected.tif"))
-    if not matches:
-        raise FileNotFoundError(
-            f"No projected resource raster found for {region_name_without_spaces} "
-            f"and technology {config.re_technology} in {output_subfolder_resource_raster}: {matches}"
-        )
-    if len(matches) > 1:
-        raise FileExistsError(
-            f"Multiple projected resource rasters found for {region_name_without_spaces} "
-            f"and technology {config.re_technology} in {output_subfolder_resource_raster}: {matches}"
-        )
-    output_resource_raster = matches[0]
+    output_resource_raster = output_subfolder_resource_raster / f"{config.re_technology}_{config.file_name_resource_raster}_projected.tif"
 
     output_subfolder_msr_creator = Path(
         Path(str(config.output_folder))
@@ -260,15 +219,9 @@ def prepare_region_context(
         / region_name_without_spaces
         / "stage5_attribution"
     )
-    if config.re_technology == "solarpv":
-        output_msr_creator = Path(
+    output_msr_creator = Path(
             output_subfolder_msr_creator
             / f"{config.re_technology}_final_msrs.shp"
-        )
-    elif config.re_technology == "wind":
-        output_msr_creator = Path(
-            output_subfolder_msr_creator
-            / f"{config.re_technology}_{config.elevation_threshold}_final_msrs.shp"
         )
     
     output_subfolder_profile_generator = Path(
@@ -277,35 +230,19 @@ def prepare_region_context(
         / region_name_without_spaces
         / config.time_profile
     )
-    matches = list(output_subfolder_profile_generator.glob(f"{config.re_technology}*CF_profiles.csv"))
-    if not matches:
-        raise FileNotFoundError(
-            f"No CF profile found for {region_name_without_spaces} "
-            f"and technology {config.re_technology} in {output_subfolder_profile_generator}"
-        )
-    if len(matches) > 1:
-        raise FileExistsError(
-            f"Multiple CF profiles found for {region_name_without_spaces} "
-            f"and technology {config.re_technology} in {output_subfolder_profile_generator}"
-        )
-    output_profile_generator = matches[0]
+    output_profile_generator = Path(
+        output_subfolder_profile_generator
+        / f"{config.re_technology}_CF_profiles.csv"
+    )
 
     output_folder_attributor_combiner = Path(
         Path(str(config.output_folder))
         / "3_attributor_combiner"
         / region_name_without_spaces
     )
-    if config.re_technology == "solarpv":
-        output_path = (
-            output_folder_attributor_combiner
-            / f"{config.re_technology}_prescreen.shp"
-        )
-    elif config.re_technology == "wind":
-        output_path = (
-            output_folder_attributor_combiner
-            / f"{config.re_technology}_{config.elevation_threshold}_prescreen.shp"
-        )
-
+    output_path = Path(
+        output_folder_attributor_combiner / f"{config.re_technology}_prescreen.shp"
+    )
 
     paths = RegionPaths(
         output_folder_attributor_combiner=output_folder_attributor_combiner,
@@ -345,7 +282,6 @@ def add_attributes(
 
     profiles = pd.read_csv(paths.output_profile_generator)
     stat = zonal_stats(str(paths.output_msr_creator), str(paths.output_resource_raster), stats="mean")
-    _disable_shapely_array_interface()
     msrs = gpd.read_file(paths.output_msr_creator)
     msrs = msrs.sort_values(by=["FID"])
     msrs["CtryName"] = context.region_name_without_spaces
@@ -536,7 +472,7 @@ def calculate_cost_attributes(
 
 def plot_lcoe_composition(
     msrs: pd.DataFrame,
-    config: MSRAttributorCombinerConfig,
+    config: AttributorCombinerConfig,
     context: RegionContext,
 ) -> None:
     """Plot region-level composition of MSR area by LCOE class.
@@ -971,7 +907,8 @@ def main() -> None:
         
         LOGGER.info(
                 f"Configuration prepared | technologies={config.technologies_to_run} "
-                f"| regions={len(config.regions)} | time_profile={config.time_profile} "
+                f"| regions={len(config.regions)} | weather years={config.weather_years}"
+                f"| time_profile={config.time_profile} "
             )
         for tech in config.technologies_to_run:
             config.re_technology = tech
