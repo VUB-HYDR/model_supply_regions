@@ -695,15 +695,10 @@ def prepare_region_context(
         / "1_msr_creator"
         / region_name_without_spaces
     )
+    output_path = Path(
+        output_folder_msr_creator / "stage6_attribution" / f"{config.re_technology}_final_msrs.shp"
+    )
 
-    if config.re_technology == "solarpv":
-        output_path = (
-            output_folder_msr_creator / "stage5_attribution" / f"{config.re_technology}_final_msrs.shp"
-        )
-    elif config.re_technology == "wind":
-        output_path = (
-            output_folder_msr_creator / "stage5_attribution" / f"{config.re_technology}_{config.elevation_threshold}_final_msrs.shp"
-        )
 
     paths = RegionPaths(
         output_folder_msr_creator=output_folder_msr_creator,
@@ -1212,7 +1207,6 @@ def run_stage_3_competitive_resource(
         f"{config.file_name_population_density}_projected",
         f"{config.file_name_land_cover}_projected",
         f"{config.file_name_elevation}_projected",
-        f"{config.file_name_elevation}_projected",
         f"{config.file_name_protected_areas}_rasterized_projected",
         f"{config.file_name_water_bodies}_rasterized_projected",
         f"distance_surface_{config.file_name_roads}",
@@ -1220,34 +1214,43 @@ def run_stage_3_competitive_resource(
         "slope_projected",
     ]
     for scored_layer_name in scored_layer_names:
-        scored_layer = xarray.open_dataarray(
-            paths.stage_2_scoring_folder / (
-                f"{config.re_technology}_{scored_layer_name}_scored.tif"
-            )
+        scored_layer_path = (
+            paths.stage_2_scoring_folder
+            / f"{config.re_technology}_{scored_layer_name}_scored.tif"
         )
-        if not (
-            config.re_technology != 'wind'
-            and scored_layer_name == f"{config.file_name_elevation}_projected"
-        ):
-            suitable_area_raster = suitable_area_raster * scored_layer.reindex(
-                {'x': suitable_area_raster.x, 'y': suitable_area_raster.y},
+        scored_layer = xarray.open_dataarray(
+            scored_layer_path
+        )
+        # if not (
+        #     config.re_technology != 'wind'
+        #     and scored_layer_name == f"{config.file_name_elevation}_projected"
+        # ):
+        scored_layer =scored_layer.reindex(
+                {
+                    'x': suitable_area_raster.x, 
+                    'y': suitable_area_raster.y
+                },
                 method="nearest",
-            )
-            competitive_area_raster = suitable_area_raster * 0
-            competitive_area_raster = competitive_area_raster.where(
-                ~(suitable_area_raster >= 1),
-                1,
-            )
+        )
+        suitable_area_raster = suitable_area_raster * scored_layer
+        
+        competitive_area_raster = suitable_area_raster * 0
+        
+        competitive_area_raster = competitive_area_raster.where(
+            ~(suitable_area_raster >= 1),
+            1,
+        )
 
-            suitable_area_resource_raster = resource_raster.where(
-                ~(suitable_area_raster <= 0),
-                0,
-            )
-            competitive_area_resource_raster = resource_raster.where(
-                ~(suitable_area_raster < 1),
-                0,
-            )
-        exclusion_count = exclusion_count + 1
+        suitable_area_resource_raster = resource_raster.where(
+            ~(suitable_area_raster <= 0),
+            0,
+        )
+        
+        competitive_area_resource_raster = resource_raster.where(
+            ~(suitable_area_raster < 1),
+            0,
+        )
+        exclusion_count += 1
 
     suitable_area_resource_raster = suitable_area_resource_raster.rio.reproject(
         "EPSG:4326"
@@ -1521,7 +1524,7 @@ def run_stage_4_polygonization(
     if type(msrs) == int:
         if paths.output_path.is_file():
             for suffix in [".shp", ".shx", ".prj", ".cpg", ".dbf"]:
-                (paths.stage_5_attribution_folder / f"{config.re_technology}_{config.elevation_threshold}_final_msrs{suffix}").unlink()
+                (paths.stage_6_attribution_folder / f"{config.re_technology}_final_msrs{suffix}").unlink()
         LOGGER.warning(
             f"No MSRs created because sufficient resource was not found | "
             f"region={context.region_name_without_spaces} "
@@ -1751,23 +1754,23 @@ def run_stage_5_attribution(
             climate_class_raster_path
         )
     )
-    kc = climate_distributions.apply(pd.Series).fillna(0)
-    if kc.empty:
-        msrs['KCDomCl'] = np.nan
-        msrs['KCDomSh'] = 0.0
+    kg = climate_distributions.apply(pd.Series).fillna(0)
+    if kg.empty:
+        msrs['KGDomCl'] = np.nan
+        msrs['KGDomSh'] = 0.0
     else:
-        kc = kc.rename(columns=lambda value: f"KC_{int(value)}")
-        for col in kc.columns:
-            msrs[col] = kc[col]
-        valid_kc = kc.sum(axis=1) > 0
-        msrs['KCDomCl'] = np.nan
-        msrs.loc[valid_kc, 'KCDomCl'] = (
-            kc.loc[valid_kc]
+        kg = kg.rename(columns=lambda value: f"KG_{int(value)}")
+        for col in kg.columns:
+            msrs[col] = kg[col]
+        valid_kg = kg.sum(axis=1) > 0
+        msrs['KGDomCl'] = np.nan
+        msrs.loc[valid_kg, 'KGDomCl'] = (
+            kg.loc[valid_kg]
             .idxmax(axis=1)
-            .str.replace('KC_', '', regex=False)
+            .str.replace('KG_', '', regex=False)
             .astype(float)
         )
-        msrs['KCDomSh'] = kc.max(axis=1)
+        msrs['KGDomSh'] = kg.max(axis=1)
     LOGGER.info(
         f"Climate class attributed | region={context.region_name_without_spaces}"
     )
@@ -1957,7 +1960,7 @@ def plot_climate_class_composition(
 ) -> None:
     """Plot region-level Köppen-Geiger climate class composition of MSR area.
 
-    The KC_<class> columns contain the percentage of each climate class class
+    The KG_<class> columns contain the percentage of each climate class class
     within an MSR.
     """
 
@@ -1999,7 +2002,7 @@ def plot_climate_class_composition(
     climate_class_columns = [
         column
         for column in msrs.columns
-        if column.startswith("KC_")
+        if column.startswith("KG_")
     ]
 
     if not climate_class_columns:
@@ -2036,7 +2039,7 @@ def plot_climate_class_composition(
     )
 
     class_values = [
-        int(column.replace("KC_", ""))
+        int(column.replace("KG_", ""))
         for column in region_percentage.columns
     ]
 
