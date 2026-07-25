@@ -393,7 +393,7 @@ def main() -> None:
     except Exception:
         LOGGER.exception("Screener workflow failed")
         raise
-    LOGGER.info("Attributor Combiner workflow completed")
+    LOGGER.info("Screener workflow completed")
 
 
 if __name__ == "__main__":
