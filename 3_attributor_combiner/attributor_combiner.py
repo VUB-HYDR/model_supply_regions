@@ -50,7 +50,7 @@ class AttributorCombinerConfig:
     reference_plant_capacity: int
     solar_pv_loss_adjustment: float
     wind_loss_adjustment: float
-    weather_years: list[int]
+    #weather_years: list[int]
 
 
 @dataclass
@@ -144,8 +144,6 @@ def build_attributor_combiner_config(
         Path(Path(str(control_paths.loc["input_folder_datasets"][0])) /
         str(control_datasets.loc["file_name_cost_assumptions"][0])),
         sep=";", index_col=0)
-    
-    file_name_resource_raster = str(control_datasets.loc["file_name_resource_raster"][0])
 
     re_technology = ""
     technologies_to_run = []
@@ -157,7 +155,12 @@ def build_attributor_combiner_config(
         technologies_to_run.append("wind")
     if bool(control_configurations.loc["run_code_for_offshore_wind"][0]):
         technologies_to_run.append("offshorewind")
-
+    
+    if bool(control_configurations.loc["run_code_for_solar_pv"][0]):
+        file_name_resource_raster = str(control_datasets.loc["file_name_resource_raster_solarpv"][0])
+    if bool(control_configurations.loc["run_code_for_wind"][0]):
+        file_name_resource_raster = str(control_datasets.loc["file_name_resource_raster_wind"][0])
+    
     local_time_profile = bool(control_configurations.loc["local_time_profile"][0])
     if local_time_profile:
         time_profile = "local_time_profiles"
@@ -170,10 +173,10 @@ def build_attributor_combiner_config(
     reference_plant_capacity = int(control_parameters.loc["reference_plant_capacity"][0])
     solar_pv_loss_adjustment = float(control_parameters.loc["solarpv_loss_adjustment"][0]) / 100
     wind_loss_adjustment = float(control_parameters.loc["wind_loss_adjustment"][0]) / 100
-    weather_years = [int(year) 
-                     for year in str(
-                         control_parameters.loc["weather_years"][0]).split(";")
-                    ]
+    #weather_years = [int(year) 
+    #                 for year in str(
+    #                     control_parameters.loc["weather_years"][0]).split(";")
+    #                ]
 
     return AttributorCombinerConfig(
         control_file=control_file,
@@ -194,7 +197,7 @@ def build_attributor_combiner_config(
         reference_plant_capacity=reference_plant_capacity,
         solar_pv_loss_adjustment=solar_pv_loss_adjustment,
         wind_loss_adjustment=wind_loss_adjustment,
-        weather_years=weather_years,
+        #weather_years=weather_years,
     )
 
 def prepare_region_context(
@@ -280,7 +283,7 @@ def add_attributes(
     
     paths = context.paths
 
-    profiles = pd.read_csv(paths.output_profile_generator)
+    profiles = pd.read_csv(paths.output_profile_generator, sep = ';')
     stat = zonal_stats(str(paths.output_msr_creator), str(paths.output_resource_raster), stats="mean")
     msrs = gpd.read_file(paths.output_msr_creator)
     msrs = msrs.sort_values(by=["FID"])
@@ -291,7 +294,7 @@ def add_attributes(
 
         # Add resource attributes
         msrs["GHIkWhm2d"] = pd.Series(stat[0]["mean"], index=msrs.index)
-        msrs["RawERAmean"] = profiles["ERA_GHI KWh/m2/yr"] / config.days_in_year
+        msrs["RawERAmean"] = profiles["ERA5_GHI kWh/m2/yr"] / config.days_in_year
         msrs["CorAdderWh"] = profiles["BiasCorrection Adder Wh for solar hours"]
         msrs["CF"] = (
             config.solar_pv_loss_adjustment
@@ -907,7 +910,7 @@ def main() -> None:
         
         LOGGER.info(
                 f"Configuration prepared | technologies={config.technologies_to_run} "
-                f"| regions={len(config.regions)} | weather years={config.weather_years}"
+                f"| regions={len(config.regions)} "
                 f"| time_profile={config.time_profile} "
             )
         for tech in config.technologies_to_run:

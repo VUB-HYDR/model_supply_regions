@@ -157,7 +157,10 @@ def build_profile_generator_config(
     file_name_era5_temperature_2m = str(control_datasets.loc["2m_temperature"][0])
     file_name_era5_geopotential = str(control_datasets.loc["geopotential"][0])
     file_name_era5_ssrd = str(control_datasets.loc["surface_solar_radiation_downwards"][0])
-    file_name_resource_raster = str(control_datasets.loc["file_name_resource_raster"][0])
+    if bool(control_configurations.loc["run_code_for_solar_pv"][0]):
+        file_name_resource_raster = str(control_datasets.loc["file_name_resource_raster_solarpv"][0])
+    if bool(control_configurations.loc["run_code_for_wind"][0]):
+        file_name_resource_raster = str(control_datasets.loc["file_name_resource_raster_wind"][0])
 
     # parameters
     wind_hub_height = int(control_parameters.loc["wind_hub_height"][0])
@@ -228,7 +231,7 @@ def prepare_region_context(
         Path(str(config.output_folder))
         / "1_msr_creator"
         / region_name_without_spaces
-        / "stage6_attribution"
+        / "stage5_attribution"
     )
     output_msr_creator = Path(
         output_subfolder_msr_creator
@@ -527,7 +530,7 @@ def bias_correct_solar_ghi(
 
     annual_bias_ghi = gsa_annual_ghi - era5_annual_ghi
 
-    provisional = ghi_kwh_m2 + annual_bias_ghi / config.hours_in_year
+    provisional = ghi_kwh_m2 + annual_bias_ghi / hours_in_year
 
     eligible = (
         (ghi_kwh_m2 != 0)
@@ -963,11 +966,11 @@ def create_local_time_profiles(
 
     # TODO: roll function rotates values along the entire multi-year time-axis, 
     # which may not be correct for multi-year datasets.
-    # ds_local = ds.roll(valid_time=offset, roll_coords=False)
+    ds_local = ds.roll(valid_time=offset, roll_coords=False)
     # Instead, use assign_coords to shift the valid_time coordinate by the offset in hours.
-    ds_local = ds.assign_coords(
-        valid_time=ds["valid_time"] + pd.to_timedelta(offset, unit="h")
-    )
+    #ds_local = ds.assign_coords(
+    #    valid_time=ds["valid_time"] + pd.to_timedelta(offset, unit="h")
+    #)
 
     LOGGER.info(
         f"Local time profiles created "
@@ -1049,7 +1052,37 @@ def write_output(
     # plot_duration_curve(output_utc, config, context)
     # plot_fourier_spectrum(output_utc, config, context)
     plot_daily_profiles(output_lt, config, context)
-    plot_seasonal_profiles(output_lt, config, context)  
+    plot_seasonal_profiles(output_lt, config, context)
+
+
+def weighted_percentile_ts(df, weights, percentile):
+    """
+    Calculate weighted percentile of multi-location time series for each time step
+    """
+    # order weights
+    w = np.array(weights).reshape(-1, 1)
+    w = w / np.sum(w)
+    
+    # extract time series data
+    data = df.values
+    
+    # extract data and weights associated, sort in ascending order
+    sorted_idx = np.argsort(data, axis = 0)
+    sorted_data = np.take_along_axis(data, sorted_idx, axis = 0)
+    
+    # alignment of weights
+    w_broadcast = np.broadcast_to(w, data.shape)
+    sorted_weights = np.take_along_axis(w_broadcast, sorted_idx, axis = 0)
+    
+    # cumulation of weights
+    cum_weights = np.cumsum(sorted_weights, axis = 0) - 0.5 * sorted_weights
+    
+    # interpolate to find the value
+    p_val = percentile / 100
+    result = [np.interp(p_val, cum_weights[:, j], sorted_data[:, j]) for j in range(data.shape[1])]
+    
+    return pd.Series(result, index = df.columns)
+
 
 def plot_duration_curve(
     df: pd.DataFrame,
@@ -1204,13 +1237,14 @@ def plot_fourier_spectrum(
         f"technology={config.re_technology} | "
         f"path={output_path}"
     )
+    
 
 def plot_daily_profiles(
     df: pd.DataFrame,
     config: ProfileGeneratorConfig,
     context: RegionContext,
 ) -> None:
-    """Plot daily profiles for first MSR in the output DataFrame."""
+    """Plot daily profiles across MSRs in the output DataFrame."""
 
     if config.re_technology == "solarpv":
         color = "orange"
@@ -1235,25 +1269,56 @@ def plot_daily_profiles(
 
     capacities = df["CapacityMW"].to_numpy(dtype=float)
 
-    w_profile = np.average(
-        df[profile_col].to_numpy(dtype=float),
-        axis=0,
-        weights=capacities
-    ) * 100
+    # weighted mean and percentiles
+    w_profile_median = weighted_percentile_ts(df[profile_col], capacities, 50).to_numpy(dtype = float) * 100
+    w_profile_25 = weighted_percentile_ts(df[profile_col], capacities, 25).to_numpy(dtype = float) * 100
+    w_profile_75 = weighted_percentile_ts(df[profile_col], capacities, 75).to_numpy(dtype = float) * 100
+    
+    # 75th percentile profile across MSRs
+    #w_profile_75 = np.percentile(
+    #    df[profile_col].to_numpy(dtype=float),
+    #    75,
+    #    axis=0
+    #) * 100
 
-    profile = pd.DataFrame(
+    profile_median = pd.DataFrame(
         {
-            "capacity_factor": w_profile,
+            "capacity_factor": w_profile_median,
+            "month": timestamps.month,
+            "hour": timestamps.hour,
+        },
+        index=timestamps
+    )
+    
+    profile_25 = pd.DataFrame(
+        {
+            "capacity_factor": w_profile_25,
+            "month": timestamps.month,
+            "hour": timestamps.hour,
+        },
+        index=timestamps
+    )
+    
+    profile_75 = pd.DataFrame(
+        {
+            "capacity_factor": w_profile_75,
             "month": timestamps.month,
             "hour": timestamps.hour,
         },
         index=timestamps
     )
 
-    stats = (
-        profile.groupby(["month", "hour"])["capacity_factor"]
-        .agg(["mean", "min", "max"])
-    )
+    stats_median = (
+        profile_median.groupby(["month", "hour"])["capacity_factor"]
+        .agg(['mean']))
+    
+    stats_25 = (
+        profile_25.groupby(["month", "hour"])["capacity_factor"]
+        .agg(['mean']))
+    
+    stats_75 = (
+        profile_75.groupby(["month", "hour"])["capacity_factor"]
+        .agg(['mean']))
 
     month_name = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -1261,32 +1326,34 @@ def plot_daily_profiles(
     ]
 
     fig, axes = plt.subplots(
-        nrows=3,
-        ncols=4,
-        figsize=(12, 8),
-        sharex=True,
-        sharey=True,
+        nrows = 3,
+        ncols = 4,
+        figsize = (12, 8),
+        sharex = True,
+        sharey = True,
     )
 
-    for month, ax in enumerate(axes.flat, start=1):
+    for month, ax in enumerate(axes.flat, start = 1):
 
-        monthly = stats.loc[month]
+        monthly_median = stats_median.loc[month]
+        monthly_25 = stats_25.loc[month]
+        monthly_75 = stats_75.loc[month]
 
         ax.plot(
-            monthly.index,
-            monthly["mean"],
-            color=color,
-            linewidth=2,
-            label="Mean"
+            monthly_median.index,
+            monthly_median["mean"],
+            color = color,
+            linewidth = 2,
+            label = "Median (weighted)"
         )
 
         ax.fill_between(
-            monthly.index,
-            monthly["min"],
-            monthly["max"],
-            color=color,
-            alpha=0.2,
-            label="Min-Max range"
+            monthly_median.index,
+            monthly_25["mean"],
+            monthly_75["mean"],
+            color = color,
+            alpha = 0.2,
+            label = "Interquartile range"
         )
 
         ax.set_title(month_name[month - 1])
@@ -1298,11 +1365,12 @@ def plot_daily_profiles(
         ax.spines["right"].set_visible(False)
     
     fig.supxlabel("Hour of day")
-    fig.supylabel("Capacity weighted capacity factor (%)")
+    fig.supylabel("Capacity factor across MSRs (%)")
     fig.suptitle(
         f"{context.region_name_with_spaces} daily {name} profile"
         )
     
+    plt.legend()
     plt.tight_layout()
 
     fig.savefig(
@@ -1349,18 +1417,31 @@ def plot_seasonal_profiles(
     )
 
     capacities = df["CapacityMW"].to_numpy(dtype=float)
+    
+    # weighted mean and percentiles
+    w_profile_median = weighted_percentile_ts(df[profile_col], capacities, 50).to_numpy(dtype = float) * 100
+    w_profile_25 = weighted_percentile_ts(df[profile_col], capacities, 25).to_numpy(dtype = float) * 100
+    w_profile_75 = weighted_percentile_ts(df[profile_col], capacities, 75).to_numpy(dtype = float) * 100
 
-    w_profile = np.average(
-        df[profile_col].to_numpy(dtype=float),
-        axis=0,
-        weights=capacities
-    ) * 100
+    series_median = pd.Series(w_profile_median, index=timestamps, dtype=float)
+    series_25 = pd.Series(w_profile_25, index=timestamps, dtype=float)
+    series_75 = pd.Series(w_profile_75, index=timestamps, dtype=float)
 
-    series = pd.Series(w_profile, index=timestamps, dtype=float)
-
-    monthly = (
-        series.groupby(series.index.month)
-        .agg(["mean", "min", "max"])
+    monthly_median = (
+        series_median.groupby(series_median.index.month)
+        .agg(['mean'])
+        .reindex(range(1, 13))
+    )
+    
+    monthly_25 = (
+        series_25.groupby(series_25.index.month)
+        .agg(['mean'])
+        .reindex(range(1, 13))
+    )
+    
+    monthly_75 = (
+        series_75.groupby(series_75.index.month)
+        .agg(['mean'])
         .reindex(range(1, 13))
     )
 
@@ -1370,24 +1451,24 @@ def plot_seasonal_profiles(
 
     ax.plot(
         np.arange(1,13),
-        monthly["mean"],
+        monthly_median["mean"],
         color=color,
         linewidth=2,
-        label="Mean"
+        label="Median (weighted)"
     )
     ax.fill_between(
         np.arange(1,13),
-        monthly["min"],
-        monthly["max"],
+        monthly_25["mean"],
+        monthly_75["mean"],
         color=color,
         alpha=0.2,
-        label="Min-Max range",
+        label="Interquartile range",
     )
 
     ax.set_xlabel("Month of year")
     ax.set_ylabel("Capacity factor (%)")
     ax.set_xlim(1, 12)
-    ax.set_ylim(0, 110)
+    ax.set_ylim(0, np.min([np.max(monthly_75["mean"])*1.25, 110]))
     ax.set_xticks(range(1, 13))
     ax.set_xticklabels([
         "Jan", "Feb", "Mar", "Apr", "May", "Jun",

@@ -19,7 +19,7 @@ CONTROL_FILE_NAME = "control_file_screener.xlsx"
 PATHS_SHEET = "paths"
 CONFIGURATIONS_SHEET = "configurations"
 DATASETS_SHEET = "datasets"
-PARAMETERS_SHEET = "parameters"
+#PARAMETERS_SHEET = "parameters"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -81,11 +81,11 @@ def load_control_workbook(control_file: Path) -> dict[str, pd.DataFrame]:
             sheet_name=PATHS_SHEET,
             index_col=0,
         ),
-        "control_parameters": pd.read_excel(
-            control_file,
-            sheet_name=PARAMETERS_SHEET,
-            index_col=0,
-        ),
+        #"control_parameters": pd.read_excel(
+        #    control_file,
+        #    sheet_name=PARAMETERS_SHEET,
+        #    index_col=0,
+        #),
         "control_configurations": pd.read_excel(
             control_file,
             sheet_name=CONFIGURATIONS_SHEET,
@@ -109,7 +109,7 @@ def build_screener_config(
     """
 
     control_paths = control["control_paths"]
-    control_parameters = control["control_parameters"]
+    #control_parameters = control["control_parameters"]
     control_configurations = control["control_configurations"]
     control_datasets = control["control_datasets"]
 
@@ -267,22 +267,20 @@ def export_csv(
 ) -> None:
 
     paths = context.paths
-    if not config.add_cf_profiles:
-        if "geometry" in msrs.columns:
-            msrs = msrs.drop(columns=["geometry"])
-            msrs.to_csv(paths.output_csv_path, index=False, sep=";")
-        return
     
-    profiles = pd.read_csv(paths.output_profile_generator)
-    profile_columns = [col for col in profiles.columns if col.startswith("H")]
-    profiles = profiles[["MSR_ID"] + ["Longitude"] + ["Latitude"] + profile_columns]
+    profiles = pd.read_csv(paths.output_profile_generator, sep = ';')
+    if config.add_cf_profiles:
+        profile_columns = [col for col in profiles.columns if col[0].isdigit()]
+        profiles = profiles[["MSR_ID"] + ["Longitude"] + ["Latitude"] + profile_columns]
+    else:
+        profiles = profiles[["MSR_ID"] + ["Longitude"] + ["Latitude"]]
 
     output = msrs.merge(profiles, on="MSR_ID", how="left")
     if "geometry" in output.columns:
         output = output.drop(columns=["geometry"])
     other_columns = [col for col in output.columns if col not in ["MSR_ID", "Longitude", "Latitude"]]
     output = output[["MSR_ID"] + ["Longitude"] + ["Latitude"] + other_columns]
-    output.to_csv(paths.output_csv_path, index=False, sep=";")
+    output.transpose().to_csv(paths.output_csv_path, index = True, header = False, sep=";")
 
 
 def plot_lcoe_cf(
