@@ -1,16 +1,12 @@
 import cdsapi
 
-# "100m_u_component_of_wind",
-# "100m_v_component_of_wind",
-# "10m_v_component_of_wind",
-# "10m_u_component_of_wind",
-# "clear_sky_direct_solar_radiation_at_surface",
-# "near_ir_albedo_for_diffuse_radiation",
-# "surface_solar_radiation_downwards",
-# "total_sky_direct_solar_radiation_at_surface",
-# "uv_visible_albedo_for_diffuse_radiation",
-# "2m_temperature",
-# "geopotential"
+# "100m_u_component_of_wind"            (100m) [wind],
+# "100m_v_component_of_wind"            (100m) [wind],,
+# "10m_v_component_of_wind"             (10m) [wind],
+# "10m_u_component_of_wind"             (10m) [wind],
+# "surface_solar_radiation_downwards"   (ssrd) [solar PV],
+# "2m_temperature"                      (t2m) [solar PV, wind],
+# "geopotential"                        (z) [wind]
 
 dataset = "reanalysis-era5-single-levels"
 request = {
@@ -54,12 +50,5 @@ request = {
     "area": [1.5, -81, -5, -75.25]
 }
 
-output_folder = "C:/Users/mastt/OneDrive - VITO/Documents/21_WP1/RawData/model_supply_regions/workflow/inputs/2022 MSR Toolset Inputs"
-output_file = f"{output_folder}/2013_100m.nc"
-
-client = cdsapi.Client()
-client.retrieve(dataset, request, str(output_file))
-
-print(f"Saved to: {output_file}")
 client = cdsapi.Client()
 client.retrieve(dataset, request).download()
