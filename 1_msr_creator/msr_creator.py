@@ -2,13 +2,13 @@
 
 The workflow reads an Excel control file, processes regional geospatial
 inputs, scores suitability layers, identifies competitive renewable-resource
-areas, optionally relaxes resource thresholds for resource-lagging regions,
-polygonizes suitable areas, and attributes final MSRs with capacity, 
+areas, polygonizes suitable areas, and attributes final MSRs with capacity, 
 infrastructure distance, load-centre, land-cover, climate class and elevation metrics.
 """
 
 from __future__ import annotations
 
+# from asyncio import subprocess
 import json
 import logging
 import math
@@ -28,32 +28,25 @@ import numpy as np
 import pandas as pd
 import pyproj
 import rasterio
-import richdem as rd
+# import richdem as rd
 import rioxarray
 import scipy.stats
 import xarray
-import xrspatial
+# import xrspatial
 from geocube.api.core import make_geocube
 from osgeo import osr
 from rasterio.features import shapes
 from rasterio.mask import mask
 from rasterio.warp import Resampling, reproject
 from rasterstats import zonal_stats
-from scipy.ndimage import label
+from scipy.ndimage import distance_transform_edt, label
 from shapely.geometry import LineString, MultiPolygon
 from shapely.geometry import box, mapping
 from shapely.ops import split
+import subprocess
 from shapely.geometry import Polygon
 from shapely.geometry.base import BaseGeometry, BaseMultipartGeometry
-def _disable_shapely_array_interface():
-    def _raise_attribute_error(self):
-        raise AttributeError("__array_interface__ is intentionally disabled")
 
-    BaseGeometry.__array_interface__ = property(_raise_attribute_error)
-    BaseMultipartGeometry.__array_interface__ = property(
-        _raise_attribute_error
-    )
-    Polygon.__array_interface__ = property(_raise_attribute_error)
 
 
 CONTROL_FILE_NAME = "control_file_msr_creator.xlsx"
@@ -105,15 +98,12 @@ class MsrCreatorConfig:
     slope_threshold: float
     population_threshold: int
     re_spatial_footprint: float
-    resource_lower_limit: float
     resource_threshold: float
     run_info_column_headers: list[str]
     max_area_to_cap_msrs_km2: float
     land_cover_classes: list[int]
     default_min_contiguous_area_suitable_for_msr_km2: float
     elevation_threshold: int
-    hours_in_year: int
-    days_in_year: int
     wind_spacing_downwind_rotor_diameters: int
     wind_spacing_crosswind_rotor_diameters: int
     wind_rotor_diameter: int
@@ -129,8 +119,8 @@ class RegionPaths:
     stage_1_clipping_folder: Path
     stage_2_scoring_folder: Path
     stage_3_competitive_resource_folder: Path
-    stage_5_polygonization_folder: Path
-    stage_6_attribution_folder: Path
+    stage_4_polygonization_folder: Path
+    stage_5_attribution_folder: Path
     output_path: Path
 
 
@@ -247,7 +237,7 @@ def build_msr_creator_config(
         technologies_to_run.append("wind")
     if bool(control_configurations.loc["run_code_for_offshore_wind"][0]):
         technologies_to_run.append("offshorewind")
-        
+    
     # error in case more than one tech selected
     if np.size(technologies_to_run) > 1:
         print('ERROR: more than one technology selected.')
@@ -266,9 +256,6 @@ def build_msr_creator_config(
     band_count_for_multi_resolve_algorithm=int(
             control_parameters.loc["band_count_for_multi_resolve_algorithm"][0]
         )
-
-    hours_in_year = int(control_parameters.loc["hours_in_year"][0])
-    days_in_year = int(control_parameters.loc["days_in_year"][0])
 
     elevation_threshold = int(control_parameters.loc["elevation_threshold"][0])
     population_threshold = int(control_parameters.loc["population_threshold"][0])
@@ -303,7 +290,6 @@ def build_msr_creator_config(
         )
         slope_threshold = float(control_parameters.loc["pv_slope_threshold"][0])
         re_spatial_footprint = float(control_parameters.loc["pv_footprint"][0])
-        resource_lower_limit = float(control_parameters.loc["pv_ghi_lower_limit"][0])
         resource_threshold = float(control_parameters.loc["pv_ghi_threshold"][0])
         run_info_column_headers = ['resource_threshold_kwh_per_m2_day', 'yield_gwh']
 
@@ -314,7 +300,6 @@ def build_msr_creator_config(
         )
         slope_threshold = float(control_parameters.loc["csp_slope_threshold"][0])
         re_spatial_footprint = float(control_parameters.loc["csp_footprint"][0])
-        resource_lower_limit = float(control_parameters.loc["csp_dni_lower_limit"][0])
         resource_threshold = float(control_parameters.loc["csp_dni_threshold"][0])
         run_info_column_headers = ['resource_threshold_kwh_per_m2_day', 'yield_gwh']
 
@@ -324,7 +309,6 @@ def build_msr_creator_config(
             float(control_parameters.loc["wind_land_discount_factor"][0]) / 100
         )
         slope_threshold = float(control_parameters.loc["wind_slope_threshold"][0])
-        resource_lower_limit = float(control_parameters.loc["wind_speed_lower_limit"][0])
         resource_threshold = float(control_parameters.loc["wind_speed_threshold"][0])
         number_of_turbines_per_km2 = math.floor(
             1 / (
@@ -396,7 +380,6 @@ def build_msr_creator_config(
         slope_threshold=slope_threshold,
         population_threshold=population_threshold,
         re_spatial_footprint=re_spatial_footprint,
-        resource_lower_limit=resource_lower_limit,
         resource_threshold=resource_threshold,
         run_info_column_headers=run_info_column_headers,
         max_area_to_cap_msrs_km2=max_area_to_cap_msrs_km2,
@@ -405,8 +388,6 @@ def build_msr_creator_config(
             default_min_contiguous_area_suitable_for_msr_km2
         ),
         elevation_threshold=elevation_threshold,
-        hours_in_year=hours_in_year,
-        days_in_year=days_in_year,
         wind_turbine_capacity=wind_turbine_capacity,
         wind_rotor_diameter=wind_rotor_diameter,
         wind_spacing_downwind_rotor_diameters=wind_spacing_downwind_rotor_diameters,
@@ -446,7 +427,7 @@ def quadrat_cut_geometry(geometry, quadrat_width):
     lines = vertical_lines + horizont_lines
 
     for line in lines:
-        geometry = MultiPolygon(split(geometry, line))
+        geometry = MultiPolygon(split(geometry, line).geoms)
 
     return geometry
 
@@ -611,18 +592,15 @@ def get_stages_to_run(control_configurations: pd.DataFrame) -> list[int]:
             "perform_stage_3_get_resource_potential"
         ][0],
         control_configurations.loc[
-            "perform_stage_4_resource_sufficiency_check_and_relaxation"
+            "perform_stage_4_polygonization"
         ][0],
         control_configurations.loc[
-            "perform_stage_5_polygonization"
-        ][0],
-        control_configurations.loc[
-            "perform_stage_6_attribution"
+            "perform_stage_5_attribution"
         ][0],
     ]
     return [
         stage_number
-        for stage_number in range(1, 7)
+        for stage_number in range(1, 6)
         if run_status_of_process_scripts[stage_number - 1] != 0
     ]
 
@@ -638,7 +616,7 @@ def process_all_regions(config: MsrCreatorConfig) -> None:
         f"Loading region boundaries | "
         f"path={config.input_folder_datasets / f'{config.file_name_region_boundaries}.shp'}"
     )
-    _disable_shapely_array_interface()
+    
     region_boundaries = gpd.read_file(
         config.input_folder_datasets
         / f"{config.file_name_region_boundaries}.shp"
@@ -705,15 +683,10 @@ def prepare_region_context(
         / "1_msr_creator"
         / region_name_without_spaces
     )
+    output_path = Path(
+        output_folder_msr_creator / "stage5_attribution" / f"{config.re_technology}_final_msrs.shp"
+    )
 
-    if config.re_technology == "solarpv":
-        output_path = (
-            output_folder_msr_creator / "stage6_attribution" / f"{config.re_technology}_final_msrs.shp"
-        )
-    elif config.re_technology == "wind":
-        output_path = (
-            output_folder_msr_creator / "stage6_attribution" / f"{config.re_technology}_{config.elevation_threshold}_final_msrs.shp"
-        )
 
     paths = RegionPaths(
         output_folder_msr_creator=output_folder_msr_creator,
@@ -723,15 +696,15 @@ def prepare_region_context(
         stage_3_competitive_resource_folder=(
             output_folder_msr_creator / "stage3_competitive_resource_area"
         ),
-        stage_5_polygonization_folder=output_folder_msr_creator / "stage5_polygonization",
-        stage_6_attribution_folder=output_folder_msr_creator / "stage6_attribution",
+        stage_4_polygonization_folder=output_folder_msr_creator / "stage4_polygonization",
+        stage_5_attribution_folder=output_folder_msr_creator / "stage5_attribution",
         output_path=output_path,
     )
     paths.stage_1_clipping_folder.mkdir(parents=True, exist_ok=True)
     paths.stage_2_scoring_folder.mkdir(parents=True, exist_ok=True)
     paths.stage_3_competitive_resource_folder.mkdir(parents=True, exist_ok=True)
-    paths.stage_5_polygonization_folder.mkdir(parents=True, exist_ok=True)
-    paths.stage_6_attribution_folder.mkdir(parents=True, exist_ok=True)
+    paths.stage_4_polygonization_folder.mkdir(parents=True, exist_ok=True)
+    paths.stage_5_attribution_folder.mkdir(parents=True, exist_ok=True)
 
     single_region_boundary = region_boundaries[
         region_boundaries.name == region_name
@@ -773,9 +746,8 @@ def process_region(context: RegionContext, config: MsrCreatorConfig) -> None:
             1: "Stage 1 prepare input datasets",
             2: "Stage 2 score input datasets",
             3: "Stage 3 competitive resource",
-            4: "Stage 4 resource sufficiency check and relaxation",
-            5: "Stage 5 polygonization",
-            6: "Stage 6 attribution",
+            4: "Stage 4 polygonization",
+            5: "Stage 5 attribution",
         }.get(stage, f"Unknown stage {stage}")
 
         LOGGER.info(
@@ -790,11 +762,9 @@ def process_region(context: RegionContext, config: MsrCreatorConfig) -> None:
             elif stage == 3:
                 run_stage_3_competitive_resource(context, config)
             elif stage == 4:
-                run_stage_4_resource_sufficiency_check_and_relaxation(context, config)
+                run_stage_4_polygonization(context, config)
             elif stage == 5:
-                run_stage_5_polygonization(context, config)
-            elif stage == 6:
-                run_stage_6_attribution(context, config)
+                run_stage_5_attribution(context, config)
             else:
                 LOGGER.warning(
                     f"Skipping unknown stage {stage} | "
@@ -963,55 +933,125 @@ def run_stage_1_prepare_input_datasets(
         )
     del clipped_vector, rasterized_clipped_vector
 
-    elevation_raster = rd.LoadGDAL(
-        str(paths.stage_1_clipping_folder / (
-            f"{config.re_technology}_{config.file_name_elevation}_projected.tif"
-        ))
+    # use GDAL to calculate slope from elevation raster instead of richdem
+    dem_path = (
+    paths.stage_1_clipping_folder
+    / f"{config.re_technology}_{config.file_name_elevation}_projected.tif"
+)
+
+    slope_path = (
+        paths.stage_1_clipping_folder
+        / f"{config.re_technology}_slope_projected.tif"
     )
-    slope_raster = rd.TerrainAttribute(
-        elevation_raster,
-        attrib='slope_percentage',
+
+    subprocess.run(
+        [
+            "gdaldem",
+            "slope",
+            str(dem_path),
+            str(slope_path),
+            "-p",
+            "-compute_edges"
+        ],
+        check=True,
     )
-    rd.SaveGDAL(
-        str(paths.stage_1_clipping_folder / f"{config.re_technology}_slope_projected.tif"),
-        slope_raster,
-    )
+    # elevation_raster = rd.LoadGDAL(
+    #     str(paths.stage_1_clipping_folder / (
+    #         f"{config.re_technology}_{config.file_name_elevation}_projected.tif"
+    #     ))
+    # )
+    # slope_raster = rd.TerrainAttribute(
+    #     elevation_raster,
+    #     attrib='slope_percentage',
+    # )
+    # rd.SaveGDAL(
+    #     str(paths.stage_1_clipping_folder / f"{config.re_technology}_slope_projected.tif"),
+    #     slope_raster,
+    # )
     LOGGER.info(
         f"Slope raster created | region={context.region_name_without_spaces} "
         f"| path={paths.stage_1_clipping_folder / f'{config.re_technology}_slope_projected.tif'}"
     )
-    del elevation_raster, slope_raster
+    # del elevation_raster, slope_raster
 
+    # distance_dataset_names = [
+    #     config.file_name_power_grid,
+    #     config.file_name_transmission_grid,
+    #     config.file_name_distribution_grid,
+    #     config.file_name_roads,
+    # ]
+    # for dataset_name in distance_dataset_names:
+    #     raster = xarray.open_dataarray(
+    #         paths.stage_1_clipping_folder / (
+    #             f"{config.re_technology}_{dataset_name}_rasterized_projected.tif"
+    #         )
+    #     )
+    #     distance_surface = xrspatial.proximity(
+    #         raster.squeeze('band'),
+    #         distance_metric="EUCLEADIAN",
+    #     )
+    #     # Distance surfaces are generated in projected units and clipped in the
+    #     # geographic CRS to match region-boundary geometry handling.
+    #     distance_surface = distance_surface.rio.reproject("EPSG:4326")
+    #     distance_surface = distance_surface.rio.clip(single_region.envelope)
+    #     distance_surface = distance_surface.rio.clip(single_region.geometry)
+    #     distance_surface = distance_surface.rio.reproject("ESRI:54009")
+    #     distance_surface.rio.to_raster(
+    #         paths.stage_1_clipping_folder / (
+    #             f"{config.re_technology}_distance_surface_{dataset_name}.tif"
+    #         )
+    #     )
+    #     LOGGER.info(
+    #         f"Distance surface created | region={context.region_name_with_spaces} "
+    #         f"| layer={dataset_name}"
+        # )
+    
+    # use scipy.ndimage.distance_transform_edt to calculate distance surfaces instead of xrspatial
     distance_dataset_names = [
         config.file_name_power_grid,
         config.file_name_transmission_grid,
         config.file_name_distribution_grid,
         config.file_name_roads,
     ]
+
     for dataset_name in distance_dataset_names:
-        raster = xarray.open_dataarray(
-            paths.stage_1_clipping_folder / (
-                f"{config.re_technology}_{dataset_name}_rasterized_projected.tif"
+        input_raster_path = paths.stage_1_clipping_folder / (
+            f"{config.re_technology}_{dataset_name}_rasterized_projected.tif"
+        )
+
+        output_raster_path = paths.stage_1_clipping_folder / (
+            f"{config.re_technology}_distance_surface_{dataset_name}.tif"
+        )
+
+        with rasterio.open(input_raster_path) as src:
+            feature_data = src.read(1)
+            valid_mask = src.read_masks(1) > 0
+            feature_mask = feature_data > 0
+
+            distance_data = distance_transform_edt(
+                ~feature_mask,
+                sampling=(abs(src.transform.e), abs(src.transform.a)),
+            ).astype("float32")
+
+            nodata_value = -9999.0
+            distance_data[~valid_mask] = nodata_value
+
+            profile = src.profile.copy()
+            profile.update(
+                dtype="float32",
+                count=1,
+                nodata=nodata_value,
+                compress="deflate",
             )
-        )
-        distance_surface = xrspatial.proximity(
-            raster.squeeze('band'),
-            distance_metric="EUCLEADIAN",
-        )
-        # Distance surfaces are generated in projected units and clipped in the
-        # geographic CRS to match region-boundary geometry handling.
-        distance_surface = distance_surface.rio.reproject("EPSG:4326")
-        distance_surface = distance_surface.rio.clip(single_region.envelope)
-        distance_surface = distance_surface.rio.clip(single_region.geometry)
-        distance_surface = distance_surface.rio.reproject("ESRI:54009")
-        distance_surface.rio.to_raster(
-            paths.stage_1_clipping_folder / (
-                f"{config.re_technology}_distance_surface_{dataset_name}.tif"
-            )
-        )
+
+        with rasterio.open(output_raster_path, "w", **profile) as dst:
+            dst.write(distance_data, 1)
+
         LOGGER.info(
-            f"Distance surface created | region={context.region_name_with_spaces} "
-            f"| layer={dataset_name}"
+            f"Distance surface created | "
+            f"region={context.region_name_without_spaces} "
+            f"| layer={dataset_name} "
+            f"| path={output_raster_path}"
         )
 
     LOGGER.info(
@@ -1096,14 +1136,16 @@ def run_stage_2_score_input_datasets(
 
         if layer_to_score_name == f"{config.resource_raster_name}_projected":
             scored_layer = scored_layer.where(
-                ~(layer_to_score < config.resource_lower_limit), -1)
-            scored_layer = scored_layer.where(
-                ~(layer_to_score > config.resource_threshold), 1)
-            scored_layer = scored_layer.where(
-                ~(scored_layer == 0),
-                (layer_to_score - config.resource_lower_limit)
-                / (config.resource_threshold - config.resource_lower_limit),
+                ~(layer_to_score > config.resource_threshold),
+                1,
             )
+            #scored_layer = scored_layer.where(
+            #    ~(layer_to_score < config.resource_lower_limit), -1)
+            #scored_layer = scored_layer.where(
+            #    ~(scored_layer == 0),
+            #    (layer_to_score - config.resource_lower_limit)
+            #    / (config.resource_threshold - config.resource_lower_limit),
+            #)
 
         scored_layer.rio.to_raster(
             paths.stage_2_scoring_folder / (
@@ -1126,9 +1168,7 @@ def run_stage_3_competitive_resource(
 ) -> None:
     """Stage 3: identify competitive resource and optional sufficiency output.
     Scored layers are multiplied so exclusion masks remove unsuitable pixels
-    while the resource layer preserves relative resource quality. If configured,
-    the sufficiency stage relaxes the resource threshold for regions where
-    the retained suitable area is below the configured region-area share.
+    while the resource layer preserves relative resource quality.
     """
 
     paths = context.paths
@@ -1144,6 +1184,7 @@ def run_stage_3_competitive_resource(
             f"{config.re_technology}_{config.resource_raster_name}_projected.tif"
         )
     )
+    resource_raster = resource_raster.astype("float32").rio.write_nodata(-9999.0)
     suitable_area_raster_with_no_exclusions = xarray.open_dataarray(
         paths.stage_2_scoring_folder / (
             f"{config.re_technology}_{config.resource_raster_name}_projected_scored.tif"
@@ -1156,7 +1197,6 @@ def run_stage_3_competitive_resource(
         f"{config.file_name_population_density}_projected",
         f"{config.file_name_land_cover}_projected",
         f"{config.file_name_elevation}_projected",
-        f"{config.file_name_elevation}_projected",
         f"{config.file_name_protected_areas}_rasterized_projected",
         f"{config.file_name_water_bodies}_rasterized_projected",
         f"distance_surface_{config.file_name_roads}",
@@ -1164,38 +1204,48 @@ def run_stage_3_competitive_resource(
         "slope_projected",
     ]
     for scored_layer_name in scored_layer_names:
-        scored_layer = xarray.open_dataarray(
-            paths.stage_2_scoring_folder / (
-                f"{config.re_technology}_{scored_layer_name}_scored.tif"
-            )
+        scored_layer_path = (
+            paths.stage_2_scoring_folder
+            / f"{config.re_technology}_{scored_layer_name}_scored.tif"
         )
-        if not (
-            config.re_technology != 'wind'
-            and scored_layer_name == f"{config.file_name_elevation}_projected"
-        ):
-            suitable_area_raster = suitable_area_raster * scored_layer.reindex(
-                {'x': suitable_area_raster.x, 'y': suitable_area_raster.y},
+        scored_layer = xarray.open_dataarray(
+            scored_layer_path
+        )
+        # if not (
+        #     config.re_technology != 'wind'
+        #     and scored_layer_name == f"{config.file_name_elevation}_projected"
+        # ):
+        scored_layer =scored_layer.reindex(
+                {
+                    'x': suitable_area_raster.x, 
+                    'y': suitable_area_raster.y
+                },
                 method="nearest",
-            )
-            competitive_area_raster = suitable_area_raster * 0
-            competitive_area_raster = competitive_area_raster.where(
-                ~(suitable_area_raster >= 1),
-                1,
-            )
+        )
+        suitable_area_raster = suitable_area_raster * scored_layer
+        
+        competitive_area_raster = suitable_area_raster * 0
+        
+        competitive_area_raster = competitive_area_raster.where(
+            ~(suitable_area_raster >= 1),
+            1,
+        )
 
-            suitable_area_resource_raster = resource_raster.where(
-                ~(suitable_area_raster <= 0),
-                0,
-            )
-            competitive_area_resource_raster = resource_raster.where(
-                ~(suitable_area_raster < 1),
-                0,
-            )
-        exclusion_count = exclusion_count + 1
+        suitable_area_resource_raster = resource_raster.where(
+            ~(suitable_area_raster <= 0),
+            0,
+        )
+        
+        competitive_area_resource_raster = resource_raster.where(
+            ~(suitable_area_raster < 1),
+            0,
+        )
+        exclusion_count += 1
 
     suitable_area_resource_raster = suitable_area_resource_raster.rio.reproject(
         "EPSG:4326"
     )
+    
     suitable_area_resource_raster = suitable_area_resource_raster.rio.clip(
         single_region.geometry
     )
@@ -1216,6 +1266,7 @@ def run_stage_3_competitive_resource(
 
     competitive_area_resource_raster = (
         competitive_area_resource_raster.rio.reproject("EPSG:4326"))
+
     competitive_area_resource_raster = competitive_area_resource_raster.rio.clip(
         single_region.geometry)
     competitive_area_resource_raster = (
@@ -1255,307 +1306,12 @@ def run_stage_3_competitive_resource(
         f"resource threshold={config.resource_threshold:.3f}"
         )
 
-def run_stage_4_resource_sufficiency_check_and_relaxation(
+
+def run_stage_4_polygonization(
     context: RegionContext,
     config: MsrCreatorConfig,
 ) -> None:
-    """Stage 4: optional resource sufficiency check and threshold relaxation.
-    
-    Relax the resource threshold until enough suitable area is retained.
-
-    This optional check is intended for resource-lagging regions. It lowers
-    the resource threshold by ``resource_relaxation_step`` until retained
-    contiguous suitable area exceeds ``region_area_threshold`` of region
-    area or reaches ``resource_lower_limit``.
-
-    """
-
-    paths = context.paths
-    single_region = context.single_region_boundary
-    LOGGER.info(
-        f"Stage 3 resource sufficiency check started | "
-        f"region={context.region_name_without_spaces} "
-        f"| technology={config.re_technology}"
-    )
-
-    
-    resource_relaxation_step = float(config.control_parameters.loc["resource_relaxation_step"][0])
-    region_area_threshold = float(float(config.control_parameters.loc["region_area_threshold"][0]) / 100)
-
-    suitable_area_resource_raster_path = (
-        paths.stage_3_competitive_resource_folder / (
-            f"{config.re_technology}_suitable_resource.tif")
-    )
-
-    suitable_area_resource_raster = xarray.open_dataarray(
-        suitable_area_resource_raster_path)
-    suitable_area_resource_raster = suitable_area_resource_raster.squeeze("band")
-
-    raster_pixel_size_m = abs(suitable_area_resource_raster.affine[0])
-    min_contiguous_pixels_to_retain = ceil(
-        config.default_min_contiguous_area_suitable_for_msr_km2
-        * 1000000
-        / (raster_pixel_size_m * raster_pixel_size_m)
-    )
-
-    suitable_area_resource_values = suitable_area_resource_raster.to_numpy()
-
-    resource_threshold = config.resource_threshold
-    indicative_yield_gwh = np.nan
-    cutoff_normalized = 1
-
-    break_while_loop = 0
-
-    while (
-        break_while_loop == 0 
-        and resource_threshold >= config.resource_lower_limit
-    ):
-        suitable_area_resource_values_filtered = np.where(
-            suitable_area_resource_values < resource_threshold, 
-            0,
-            suitable_area_resource_values
-        )
-
-        # Connected-component labelling removes isolated areas below MSR scale.
-        feat, count = label(suitable_area_resource_values_filtered)
-        feature_pixel_count = np.bincount(feat[feat >= 0])
-        desired_features_to_retain = np.where(
-            feature_pixel_count > min_contiguous_pixels_to_retain)
-        suitable_area_resource_without_small_contiguous_regions = np.zeros_like(
-            suitable_area_resource_values_filtered)
-        if len(desired_features_to_retain[0]) > 1:
-            for f in desired_features_to_retain[0][1:]:
-                suitable_area_resource_without_small_contiguous_regions = np.where(
-                    feat == f,
-                    suitable_area_resource_values_filtered,
-                    suitable_area_resource_without_small_contiguous_regions)
-        LOGGER.debug(
-            f"Resource sufficiency retained "
-            f"{len(desired_features_to_retain[0])} contiguous features"
-        )
-        suitable_area_resource_without_small_contiguous_regions[
-            np.isnan(suitable_area_resource_without_small_contiguous_regions)
-        ] = 0
-
-        if config.re_technology == 'solarpv':
-            # PV yield uses GHI, pixel area, days/year, efficiency, spacing,
-            # and land-discount assumptions.
-
-            pv_conversion_efficiency = float(config.control_parameters.loc["pv_conversion_efficiency"][0]) / 100
-            pv_spacing_factor = float(config.control_parameters.loc["pv_spacing_factor"][0]) / 100
-        
-            indicative_yield_gwh = (
-                suitable_area_resource_without_small_contiguous_regions.sum()
-                * raster_pixel_size_m
-                * raster_pixel_size_m
-                * (config.days_in_year / 1000000)
-                * pv_conversion_efficiency
-                * pv_spacing_factor
-                * config.land_discount
-            )
-
-        if config.re_technology == 'solarcsp':
-            # CSP yield uses configurable resource-bin production percentages.
-
-            csp_land_classes = np.array(
-                [
-                    float(value.strip())
-                    for value in str(
-                        config.control_parameters.loc["csp_land_classes"][0]).split(",")
-                ],
-                dtype=float,
-            )
-            csp_production_percentage_per_land_class = np.array(
-                [
-                    float(value.strip())
-                    for value in str(
-                        config.control_parameters.loc["csp_production_percentage_per_land_class"][0]).split(",")
-                ],
-                dtype=float,
-            )
-            area_per_spatial_cluster = (
-                np.histogram(
-                    suitable_area_resource_without_small_contiguous_regions,
-                    bins=csp_land_classes,
-                )[0]
-                * raster_pixel_size_m
-                * raster_pixel_size_m
-                / 1000000
-            )
-            csp_max_capacity_per_spatial_cluster = (
-                config.re_spatial_footprint
-                * area_per_spatial_cluster
-                * config.land_discount
-            )
-            indicative_yield_gwh = (
-                csp_max_capacity_per_spatial_cluster
-                * config.hours_in_year
-                * csp_production_percentage_per_land_class
-                / 100
-            ).sum() / 1000
-
-        if config.re_technology == 'wind':
-            # Wind yield uses configurable resource-bin production percentages.
-
-            wind_land_classes = np.array(
-                [
-                    float(value.strip())
-                    for value in str(
-                        config.control_parameters.loc["wind_land_classes"][0]).split(",")
-                ],
-                dtype=float,
-            )
-            wind_production_percentage_per_land_class = np.array(
-                [
-                    float(value.strip())
-                    for value in str(
-                        config.control_parameters.loc["wind_production_percentage_per_land_class"][0]).split(",")
-                ],
-                dtype=float,
-            )
-
-            area_per_spatial_cluster = (
-                np.histogram(
-                    suitable_area_resource_without_small_contiguous_regions,
-                    bins=wind_land_classes,
-                )[0]
-                * raster_pixel_size_m
-                * raster_pixel_size_m
-                / 1000000
-            )
-            wind_max_capacity_per_spatial_cluster = (
-                np.round(
-                    area_per_spatial_cluster
-                    / (
-                        config.wind_spacing_downwind_rotor_diameters
-                        * config.wind_rotor_diameter
-                        * config.wind_spacing_crosswind_rotor_diameters
-                        * config.wind_rotor_diameter
-                        / 1000000
-                    ),
-                    0,
-                )
-                * (config.wind_turbine_capacity)
-                * config.land_discount
-            )
-            indicative_yield_gwh = (
-                wind_max_capacity_per_spatial_cluster
-                * config.hours_in_year
-                * wind_production_percentage_per_land_class
-                / 100
-            ).sum() / 1000
-        LOGGER.debug(
-            f"Indicative {config.re_technology} yield: {indicative_yield_gwh:.3f} GWh "
-            f"at threshold {resource_threshold:.3f} "
-            f"and normalized cutoff {cutoff_normalized:.3f}"
-        )
-
-        sufficiency_parameter = (
-            np.count_nonzero(suitable_area_resource_without_small_contiguous_regions)
-            * raster_pixel_size_m
-            * raster_pixel_size_m
-            / 1000000
-        )
-        sufficiency_condition = context.region_area_km2 * region_area_threshold
-
-        LOGGER.info(
-            f"Resource sufficiency iteration | "
-            f"region={context.region_name_without_spaces} "
-            f"| technology={config.re_technology} "
-            f"| threshold={resource_threshold:.3f} "
-            f"| retained_area={sufficiency_parameter:.2f} km2 "
-            f"| required_area={sufficiency_condition:.2f} km2 "
-            f"| indicative_yield={indicative_yield_gwh:.3f} GWh"
-        )
-
-        if sufficiency_parameter > sufficiency_condition:
-            break_while_loop = 1
-        
-        else:
-            resource_threshold = resource_threshold - resource_relaxation_step
-            
-            if resource_threshold >= config.resource_lower_limit:
-                
-                cutoff_normalized = (
-                    (resource_threshold - config.resource_lower_limit)
-                    / (config.resource_threshold - config.resource_lower_limit)
-                )
-
-    raster_path = paths.stage_3_competitive_resource_folder / (
-        f"{config.re_technology}_competitive_resource.tif"
-    )
-    
-    if resource_threshold < config.resource_threshold:
-
-        relaxed_raster_path = paths.stage_3_competitive_resource_folder / (
-            f"{config.re_technology}_competitive_resource_relaxed.tif"
-        )
-
-        competitive_area_resource_raster_relaxed = suitable_area_resource_raster.where(
-            ~(suitable_area_resource_raster < resource_threshold),
-            0
-        )
-
-        competitive_area_resource_raster_relaxed = (
-            competitive_area_resource_raster_relaxed.rio.reproject("EPSG:4326")
-        )
-        competitive_area_resource_raster_relaxed = (
-            competitive_area_resource_raster_relaxed.rio.clip(single_region.geometry)
-        )
-        competitive_area_resource_raster_relaxed = (
-            competitive_area_resource_raster_relaxed.rio.reproject("ESRI:54009")
-        )
-        competitive_area_resource_raster_relaxed.rio.to_raster(
-            relaxed_raster_path
-        )
-
-        raster_path = relaxed_raster_path
-        
-        LOGGER.warning(
-            f"Relaxed competitive resource raster written | "
-            f"region={context.region_name_without_spaces} | "
-            f"| original={config.resource_threshold:.3f} "
-            f"| relaxed={resource_threshold:.3f} "
-            f"| path={relaxed_raster_path}"
-        )
-    
-    else:
-        LOGGER.info(
-            f"Resource threshold did not require relaxation | "
-            f"region={context.region_name_without_spaces} "
-            f"| threshold={config.resource_threshold:.3f}"
-        )
-
-    context.final_resource_threshold = resource_threshold
-    context.indicative_yield_gwh = indicative_yield_gwh
-    context.competitive_resource_raster_path = raster_path
-    pd.DataFrame(
-        {
-            "resource_threshold": context.final_resource_threshold,
-            "indicative_yield_gwh": context.indicative_yield_gwh,
-            "competitive_resource_raster_path": context.competitive_resource_raster_path,
-        }
-    ).to_csv(
-        paths.stage_3_competitive_resource_folder / (
-            f"{config.re_technology}_log_resource_identification_polygonization.csv"
-        ),
-        index=False,
-        sep=";",
-    )
-
-    LOGGER.info(
-        f"Stage 3 resource sufficiency check finished | "
-        f"region={context.region_name_without_spaces} "
-        f"| threshold={resource_threshold:.3f} "
-        f"| indicative_yield={indicative_yield_gwh:.3f} GWh"
-    )
-
-
-def run_stage_5_polygonization(
-    context: RegionContext,
-    config: MsrCreatorConfig,
-) -> None:
-    """Stage 5: polygonize competitive resource rasters into MSRs.
+    """Stage 4: polygonize competitive resource rasters into MSRs.
 
     Resource potential is split into quality bands before polygonization so
     that contiguous areas with similar resource quality are resolved separately.
@@ -1565,7 +1321,7 @@ def run_stage_5_polygonization(
     Args:
         resource_potential_raster_path: Competitive resource raster path. The
             raster is expected in ESRI:54009 for metre-based area operations.
-        stage_5_polygonization_folder: Folder for intermediate band rasters and
+        stage_4_polygonization_folder: Folder for intermediate band rasters and
             shapefiles.
         re_technology: Technology identifier used in output names.
         resource_threshold: Minimum resource value retained for MSR creation.
@@ -1583,7 +1339,7 @@ def run_stage_5_polygonization(
 
     paths = context.paths
     LOGGER.info(
-        f"Stage 5 polygonization started | "
+        f"Stage 4 polygonization started | "
         f"region={context.region_name_without_spaces} "
         f"| technology={config.re_technology}"
     )
@@ -1616,7 +1372,7 @@ def run_stage_5_polygonization(
             ]
         )
 
-    stage_5_polygonization_folder = Path(paths.stage_5_polygonization_folder)
+    stage_4_polygonization_folder = Path(paths.stage_4_polygonization_folder)
 
     resource_potential_raster = xarray.open_dataarray(resource_potential_raster_path)
     resource_potential_raster = resource_potential_raster.squeeze("band")
@@ -1628,15 +1384,15 @@ def run_stage_5_polygonization(
     is_first_msr = 1
     for resource_band in range(1, config.band_count_for_multi_resolve_algorithm + 1):
         resolved_raster_path = (
-            stage_5_polygonization_folder
+            stage_4_polygonization_folder
             / f"{config.re_technology}ResourceBand{resource_band}_resolve.tif"
         )
         single_band_initial_msrs_path = (
-            stage_5_polygonization_folder
+            stage_4_polygonization_folder
             / f"{config.re_technology}ResourceBand{resource_band}_InitialMSRs.shp"
         )
         single_band_final_msrs_path = (
-            stage_5_polygonization_folder
+            stage_4_polygonization_folder
             / f"{config.re_technology}ResourceBand{resource_band}_FinalMSRs.shp"
         )
 
@@ -1712,10 +1468,10 @@ def run_stage_5_polygonization(
                         single_polygon_parts = gpd.GeoDataFrame(
                             crs=single_band_to_be_capped.crs,
                             geometry=list(
-                                quadrat_cut_geometry(
+                                (quadrat_cut_geometry(
                                     single_band_to_be_capped.geometry.loc[i],
                                     np.sqrt(config.max_area_to_cap_msrs_km2) * 1000,
-                                )
+                                )).geoms
                             ),
                         )
                         if i == 0 and single_band_final.empty:
@@ -1758,7 +1514,7 @@ def run_stage_5_polygonization(
     if type(msrs) == int:
         if paths.output_path.is_file():
             for suffix in [".shp", ".shx", ".prj", ".cpg", ".dbf"]:
-                (paths.stage_6_attribution_folder / f"{config.re_technology}_{config.elevation_threshold}_final_msrs{suffix}").unlink()
+                (paths.stage_5_attribution_folder / f"{config.re_technology}_final_msrs{suffix}").unlink()
         LOGGER.warning(
             f"No MSRs created because sufficient resource was not found | "
             f"region={context.region_name_without_spaces} "
@@ -1774,11 +1530,11 @@ def run_stage_5_polygonization(
         )
 
 
-def run_stage_6_attribution(
+def run_stage_5_attribution(
     context: RegionContext,
     config: MsrCreatorConfig,
 ) -> None:
-    """Stage 6: attribute final MSRs with capacity and proximity data.
+    """Stage 5: attribute final MSRs with capacity and proximity data.
     Capacity is estimated from MSR area, ``land_discount``, and
     ``re_spatial_footprint``. Road, grid, substation, and load-centre
     distances are reported in kilometres after metre-based projected CRS
@@ -1788,7 +1544,7 @@ def run_stage_6_attribution(
     paths = context.paths
     single_region = context.single_region_boundary
     LOGGER.info(
-        f"Stage 6 attribution started | "
+        f"Stage 5 attribution started | "
         f"region={context.region_name_without_spaces} "
         f"| technology={config.re_technology}"
     )
@@ -1988,23 +1744,23 @@ def run_stage_6_attribution(
             climate_class_raster_path
         )
     )
-    kc = climate_distributions.apply(pd.Series).fillna(0)
-    if kc.empty:
-        msrs['KCDomCl'] = np.nan
-        msrs['KCDomSh'] = 0.0
+    kg = climate_distributions.apply(pd.Series).fillna(0)
+    if kg.empty:
+        msrs['KGDomCl'] = np.nan
+        msrs['KGDomSh'] = 0.0
     else:
-        kc = kc.rename(columns=lambda value: f"KC_{int(value)}")
-        for col in kc.columns:
-            msrs[col] = kc[col]
-        valid_kc = kc.sum(axis=1) > 0
-        msrs['KCDomCl'] = np.nan
-        msrs.loc[valid_kc, 'KCDomCl'] = (
-            kc.loc[valid_kc]
+        kg = kg.rename(columns=lambda value: f"KG_{int(value)}")
+        for col in kg.columns:
+            msrs[col] = kg[col]
+        valid_kg = kg.sum(axis=1) > 0
+        msrs['KGDomCl'] = np.nan
+        msrs.loc[valid_kg, 'KGDomCl'] = (
+            kg.loc[valid_kg]
             .idxmax(axis=1)
-            .str.replace('KC_', '', regex=False)
+            .str.replace('KG_', '', regex=False)
             .astype(float)
         )
-        msrs['KCDomSh'] = kc.max(axis=1)
+        msrs['KGDomSh'] = kg.max(axis=1)
     LOGGER.info(
         f"Climate class attributed | region={context.region_name_without_spaces}"
     )
@@ -2194,7 +1950,7 @@ def plot_climate_class_composition(
 ) -> None:
     """Plot region-level Köppen-Geiger climate class composition of MSR area.
 
-    The KC_<class> columns contain the percentage of each climate class class
+    The KG_<class> columns contain the percentage of each climate class class
     within an MSR.
     """
 
@@ -2236,7 +1992,7 @@ def plot_climate_class_composition(
     climate_class_columns = [
         column
         for column in msrs.columns
-        if column.startswith("KC_")
+        if column.startswith("KG_")
     ]
 
     if not climate_class_columns:
@@ -2273,7 +2029,7 @@ def plot_climate_class_composition(
     )
 
     class_values = [
-        int(column.replace("KC_", ""))
+        int(column.replace("KG_", ""))
         for column in region_percentage.columns
     ]
 
