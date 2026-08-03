@@ -98,15 +98,12 @@ class MsrCreatorConfig:
     slope_threshold: float
     population_threshold: int
     re_spatial_footprint: float
-    resource_lower_limit: float
     resource_threshold: float
     run_info_column_headers: list[str]
     max_area_to_cap_msrs_km2: float
     land_cover_classes: list[int]
     default_min_contiguous_area_suitable_for_msr_km2: float
     elevation_threshold: int
-    hours_in_year: int
-    days_in_year: int
     wind_spacing_downwind_rotor_diameters: int
     wind_spacing_crosswind_rotor_diameters: int
     wind_rotor_diameter: int
@@ -260,9 +257,6 @@ def build_msr_creator_config(
             control_parameters.loc["band_count_for_multi_resolve_algorithm"][0]
         )
 
-    hours_in_year = int(control_parameters.loc["hours_in_year"][0])
-    days_in_year = int(control_parameters.loc["days_in_year"][0])
-
     elevation_threshold = int(control_parameters.loc["elevation_threshold"][0])
     population_threshold = int(control_parameters.loc["population_threshold"][0])
     msr_max_capacity_threshold = int(control_parameters.loc["msr_max_capacity_threshold"][0])
@@ -296,7 +290,6 @@ def build_msr_creator_config(
         )
         slope_threshold = float(control_parameters.loc["pv_slope_threshold"][0])
         re_spatial_footprint = float(control_parameters.loc["pv_footprint"][0])
-        resource_lower_limit = float(control_parameters.loc["pv_ghi_lower_limit"][0])
         resource_threshold = float(control_parameters.loc["pv_ghi_threshold"][0])
         run_info_column_headers = ['resource_threshold_kwh_per_m2_day', 'yield_gwh']
 
@@ -307,7 +300,6 @@ def build_msr_creator_config(
         )
         slope_threshold = float(control_parameters.loc["csp_slope_threshold"][0])
         re_spatial_footprint = float(control_parameters.loc["csp_footprint"][0])
-        resource_lower_limit = float(control_parameters.loc["csp_dni_lower_limit"][0])
         resource_threshold = float(control_parameters.loc["csp_dni_threshold"][0])
         run_info_column_headers = ['resource_threshold_kwh_per_m2_day', 'yield_gwh']
 
@@ -317,7 +309,6 @@ def build_msr_creator_config(
             float(control_parameters.loc["wind_land_discount_factor"][0]) / 100
         )
         slope_threshold = float(control_parameters.loc["wind_slope_threshold"][0])
-        resource_lower_limit = float(control_parameters.loc["wind_speed_lower_limit"][0])
         resource_threshold = float(control_parameters.loc["wind_speed_threshold"][0])
         number_of_turbines_per_km2 = math.floor(
             1 / (
@@ -389,7 +380,6 @@ def build_msr_creator_config(
         slope_threshold=slope_threshold,
         population_threshold=population_threshold,
         re_spatial_footprint=re_spatial_footprint,
-        resource_lower_limit=resource_lower_limit,
         resource_threshold=resource_threshold,
         run_info_column_headers=run_info_column_headers,
         max_area_to_cap_msrs_km2=max_area_to_cap_msrs_km2,
@@ -398,8 +388,6 @@ def build_msr_creator_config(
             default_min_contiguous_area_suitable_for_msr_km2
         ),
         elevation_threshold=elevation_threshold,
-        hours_in_year=hours_in_year,
-        days_in_year=days_in_year,
         wind_turbine_capacity=wind_turbine_capacity,
         wind_rotor_diameter=wind_rotor_diameter,
         wind_spacing_downwind_rotor_diameters=wind_spacing_downwind_rotor_diameters,
@@ -696,7 +684,7 @@ def prepare_region_context(
         / region_name_without_spaces
     )
     output_path = Path(
-        output_folder_msr_creator / "stage6_attribution" / f"{config.re_technology}_final_msrs.shp"
+        output_folder_msr_creator / "stage5_attribution" / f"{config.re_technology}_final_msrs.shp"
     )
 
 
@@ -1148,14 +1136,16 @@ def run_stage_2_score_input_datasets(
 
         if layer_to_score_name == f"{config.resource_raster_name}_projected":
             scored_layer = scored_layer.where(
-                ~(layer_to_score < config.resource_lower_limit), -1)
-            scored_layer = scored_layer.where(
-                ~(layer_to_score > config.resource_threshold), 1)
-            scored_layer = scored_layer.where(
-                ~(scored_layer == 0),
-                (layer_to_score - config.resource_lower_limit)
-                / (config.resource_threshold - config.resource_lower_limit),
+                ~(layer_to_score > config.resource_threshold),
+                1,
             )
+            #scored_layer = scored_layer.where(
+            #    ~(layer_to_score < config.resource_lower_limit), -1)
+            #scored_layer = scored_layer.where(
+            #    ~(scored_layer == 0),
+            #    (layer_to_score - config.resource_lower_limit)
+            #    / (config.resource_threshold - config.resource_lower_limit),
+            #)
 
         scored_layer.rio.to_raster(
             paths.stage_2_scoring_folder / (
@@ -1524,7 +1514,7 @@ def run_stage_4_polygonization(
     if type(msrs) == int:
         if paths.output_path.is_file():
             for suffix in [".shp", ".shx", ".prj", ".cpg", ".dbf"]:
-                (paths.stage_6_attribution_folder / f"{config.re_technology}_final_msrs{suffix}").unlink()
+                (paths.stage_5_attribution_folder / f"{config.re_technology}_final_msrs{suffix}").unlink()
         LOGGER.warning(
             f"No MSRs created because sufficient resource was not found | "
             f"region={context.region_name_without_spaces} "
