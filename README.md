@@ -1,59 +1,85 @@
 <img src="https://user-images.githubusercontent.com/77098670/158803434-7125693b-283c-4d36-8780-2c57ad2015c9.gif" width="400" height="200">
 
-## Code Authors:
-**MSR_Creator.py, AttributorCombiner.py, Screener.py**: Bilal Hussain\
-**Profile_Generator.py**: Bilal Hussain, Yunshu Li, Sebastian Sterl\
-**Clustering.py**: Yunshu Li\
-**Methodology contributions:** Asami Miketa, Daniel Russo, Pablo Carvajal, Mohamed Elabbas\
-**Contact** : [bhussain@irena.org](mailto:bhussain@irena.org), [ssterl@irena.org](mailto:ssterl@irena.org), [y_li@outlook.com](mailto:y_li@outlook.com)
+# Model Supply Regions Toolset
 
-Feel free to drop quick emails of your interest, queries and motivations to extend the tool individually or in collaboration. We would also like to track your feedback for impact reporting purposes particularly on how the tool can/has contributed value to your work. Please also cite the MSR toolset methodology [paper](https://doi.org/10.1038/s41597-022-01786-5) in your academic/professional works.     
+Here we present the Model Supply Regions (MSR) Toolset v1.0.0, an open-source framework for producing spatially explicit utility-scale variable renewable energy investment options for use in energy-system planning models. The current version supports solar PV and onshore wind power technologies. The original MSR methodology and all-Africa dataset are described in the paper [Sterl et al. (2022)](https://doi.org/10.1038/s41597-022-01786-5).
 
-## Introduction:
+## Repository structure
 
-This is the public repository of Model Supply Regions (MSR) tool. The tool produces geo-referenced geometries of potential utility scale power supply regions of weather dependent renewable technologies and develops their cost and performance attributes to serve as inputs for energy/power system planning models including generation expansion models (e.g. IRENA [SPLAT Models for Africa](https://irena.org/energytransition/Energy-System-Models-and-Data/System-Planning-Test-Model)). The current version can model Solar PV &amp; Wind-onshore technologies. This tool has been applied on 50 countries in Africa. Results of Africa analysis along with methodological details of the tool and definitions of computed attributes is available in the methodology [paper](https://doi.org/10.1038/s41597-022-01786-5). Final outputs are placed in [Zenodo](https://zenodo.org/records/7014915). Inputs for MSR creator are available in this sharepoint [link](https://irena.sharepoint.com/:f:/s/EnergyPlanningCapacityBuilding-ExternalSharing/Em2CRHjokAZImIodaK5JgbIBuhli6wNMomtQ3uCzks-Gxw?e=beuTOo).
-
-## How to use MSR toolset:
-
-MSR toolset comprises of five python scripts that are run sequentially. A high level description of each script and process flow is illustrated below.
+MSR framework comprises of five python scripts that are run sequentially. A high level description of each script and process flow is illustrated below.
 
 <img src="https://user-images.githubusercontent.com/77098670/158806616-53ffbad7-beac-4263-8cb2-0f92a8e0aa46.gif" width="650" height="900">
 
-Each script is enclosed in a separate folder along with its respective control file.xlsx. Profile\_Generator.py requires ERA5 reanalysis data as input, which can be downloaded from the [Copernicus Climate Data Store](https://cds.climate.copernicus.eu/#!/home) (CDS, after having created an account and followed the instructions on [installing the CDS API](https://cds.climate.copernicus.eu/api-how-to)) using the ERA5 API script available in the respective folder as a starting point.
+The repository contains the following folders and files:
 
-Folders are numbered as per order of running scheme. All scripts use a list of input regions (countrynames.csv) available in the repository. Users can edit this list to run the toolset on desired number of input regions. For a single country run, just add single region name only. Take care that the input region names align with the input shapefile on region boundaries and relevant control files.
+```text
+model_supply_regions/
+├── 1_msr_creator/
+│   ├── msr_creator.py
+│   └── control_file_msr_creator.xlsx
+├── 2_profile_generator/
+│   ├── ERA5_API.py
+│   ├── profile_generator.py
+│   └── control_file_profile_generator.xlsx
+├── 3_attributor_combiner/
+│   ├── attributor_combiner.py
+│   └── control_file_attributor_combiner.xlsx
+├── 4_screener/
+│   ├── screener.py
+│   └── control_file_screener.xlsx
+├── 5_clustering/
+│   ├── clustering.py
+│   └── control_file_clustering.xlsx
+├── 6_clipping/
+├── 7_map_creator/
+├── envs/
+│   └── msr_env.yaml
+├── inputs/
+├── outputs/
+├── training/
+├── LICENSE
+└── README.md
+```
 
-Before running any script in the toolset, make sure that the .py file is placed with **ControlFile.xlsx** in same directory. Also make sure that **ControlFile.xlsx** holds correct file/folder addresses and code/analysis configurations as per user requirements. 
+Each workflow folder contains the relevation Python script and control file. The inputs folder stores the required input datasets, while the outputs folder stores the results generated by the framework.
 
-## Primary Dependencies:
+## Dependencies
 
-geopandas = 0.9.0 | geocube = 0.1.0 | matplotlib = 3.4.3 | netcdf4 = 1.5.7 | pandas = 1.3.2 | pyproj = 3.1.0 | pvlib = 0.8.1 | rasterio = 1.3.9 | richdem = 0.3.4 | rioxarray = 0.9.0 | rasterstats = 0.15.0 | scipy = 1.7.1 | shapely = 1.7.1 | tslearn = 0.5.2 | xarray = 0.20.2 | xarray-spatial = 0.3.0 | openpyxl = 3.1.2 | rtree = 1.1.0 | datacube = 1.8.5 | gdal = 3.3.2 | numpy = 1.20.0 | h5py = 3.10.0 | threadpoolctl = 3.1.0
+Conda is used to manage the Python environment and the packages required by the MSR framework. The environment is defined in the msr_env.yaml file, located in the envs folder.
 
-Library versions mentioned above serve only for guidance. The scripts may run flexibly on other library versions with or without minor updates as necessary. However, we recommend to follow initially the above environment, installing packages in the order given, as unforeseen conflicts may arise between newer versions of packages.
+Create and activate the environment using:
 
-## Versions:
+```bash
+conda env create -f envs/msr_env.yaml
+conda activate msr_env
+```
 
-Version 0.1.0 - March 2022
+## Training
 
-## License:
-See [license](https://github.com/bhussain89/TestRepository/blob/main/LICENSE) here
+[Training material](https://github.com/VUB-HYDR/model_supply_regions/tree/main/training) has been developed to become familiar with the MSR framework focussed on an Ecuadorian case-study.
 
-## Disk space requirements:
+## Authors
 
-**MSR\_Creator.py** requires large disk space to store outputs. It creates region wise folders and sub-folders carrying datasets from different steps executed by the code. A single country folder size can vary significantly from 2GB for small countries like Ivory Coast to 20 GB for large countries like Algeria. For a set of 50 Africa countries, the script produced outputs of total 140GB for one technology. Most outputs produced by the script are relevant for diagnostic purposes only. User can find several commented commands at the script end which can be activated to delete some output folders that are not used by next scripts.
+Tinne Mast, Vrije Universiteit Brussel (VUB) & VITO/EnergyVille, Tinne.Mast@vub.be
 
-**Profile\_Generator.py** also produces outputs that occupy large diskspace. For 50 country Africa run, it produced around 5GB data for single technology. If user decides to use just one of two time zones, the non-selected time zone data can be deleted which halves the output data size.
+Sebastian Sterl, Vrije Universiteit Brussel (VUB), Sebastian.Sterl@vub.be
 
-All remaining scripts of MSR toolset, produce outputs of size well below 1GB.
+Yuliana Rodríguez, University of Patras
 
-## Toolset run time:
+## Versions
 
-Indicative code run times for a single country are as follows:
+Version 0.1.0 - March 2022 (https://github.com/SPLATteam/Model-Supply-Regions-MSR-Toolset)
 
-**MSR\_Creator:** 15 minutes per technology
+Version 1.0.0 - August 2026
 
-**Profile\_Generator:** Depends on number of MSRs for which profiles are to be created. On average it is around 1 minute/20 MSR.
+Updates v1.0.0:
+- training material
+- multiple weather years
+- climate zone attributes
+- land-use attributes
+- elevation attributes
 
-**AttributorCombiner, Screener, Cluster:** Less than 5 minutes
+## License
 
-Total run time (all scripts) for complete Africa dataset (50 countries) took 36 hours for single technology. This run time can significantly decrease if stricter exclusion and resource criteria is adopted in ControFile\_MSRCreator.xlsx.
+This project is licensed under the MIT license. See also the [LICENSE]() file.
+
