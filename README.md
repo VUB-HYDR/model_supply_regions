@@ -56,7 +56,7 @@ conda activate msr_env
 
 ## Training
 
-[Training material]() has been developed to become familiar with the MSR framework focussed on an Ecuadorian case-study.
+[Training material](https://github.com/VUB-HYDR/model_supply_regions/tree/main/training) has been developed to become familiar with the MSR framework focussed on an Ecuadorian case-study.
 
 ## Authors
 
