@@ -56,7 +56,22 @@ conda activate msr_env
 
 ## Training
 
-[Training material](https://github.com/VUB-HYDR/model_supply_regions/tree/main/training) has been developed to become familiar with the MSR framework focussed on an Ecuadorian case-study.
+[Training material](https://github.com/VUB-HYDR/model_supply_regions/tree/main/training) has been developed to become familiar with the MSR framework applied to an Ecuadorian case-study. The datasets required for the training excercises are available in the Zenodo repository: https://zenodo.org/records/22122901. The following source datasets were used to generate the Ecuador-specific cutouts:
+
+| Dataset | Resolution | Variables | Citation | Version |
+|---|---|---|---|---|
+| ERA5 | 31 × 31 km² | 2 m temperature, 100 m u-component of wind, 100 m v-component of wind, 10 m u-component of wind, 10 m v-component of wind, Surface solar radiation downwards, Geopotential | Hersbach, H., Bell, B., Berrisford, P., Biavati, G., Horányi, A., Muñoz Sabater, J., Nicolas, J., Peubey, C., Radu, R., Rozum, I., Schepers, D., Simmons, A., Soci, C., Dee, D., & Thépaut, J.-N. (2023). *ERA5 hourly data on single levels from 1940 to present*. Copernicus Climate Change Service (C3S) Climate Data Store (CDS). [https://doi.org/10.24381/cds.adbb2d47](https://doi.org/10.24381/cds.adbb2d47) | - |
+| GRIP | - | Roads | Meijer, J. R., Huijbregts, M. A. J., Schotten, C. G. J., & Schipper, A. M. (2018). Global patterns of current and future road infrastructure. *Environmental Research Letters, 13*, 064006. Data available at [www.globio.info](https://www.globio.info). | - |
+| GridFinder | - | Electricity grid | Arderne, C., Zorn, C., Nicolas, C., & Koks, E. E. (2020). Predictive mapping of the global power system using open data. *Scientific Data, 7*, 19. | v1.1.1 |
+| WDPA | - | Protected areas | IUCN and UNEP-WCMC (2026). *The World Database on Protected and Conserved Areas (WDPA)* [Online]. Cambridge, UK: UNEP-WCMC. Available at [Protected Planet](https://www.protectedplanet.net/). | March 2026 |
+| GlobCover | 300 × 300 m² | Land cover | ESA (2010). *European Space Agency GlobCover Portal*. [http://due.esrin.esa.int/page_globcover.php](http://due.esrin.esa.int/page_globcover.php) | 2009 (v2.3) |
+| SRTM | 30 × 30 m² | Elevation | Farr, T. G., et al. (2007). The Shuttle Radar Topography Mission. *Reviews of Geophysics, 45*, RG2004. [https://doi.org/10.1029/2005RG000183](https://doi.org/10.1029/2005RG000183) | - |
+| LandScan | 1 × 1 km² | Population | Rose, A., McKee, J., Sims, K., Bright, E., Reith, A., & Urban, M. (2020). *LandScan Global 2019* [Data set]. Oak Ridge National Laboratory. [https://doi.org/10.48690/1524214](https://doi.org/10.48690/1524214) | 2019 |
+| GWA | 250 × 250 m² | Mean wind speed | Global Wind Atlas version 4.0, a free, web-based application developed, owned and operated by the Technical University of Denmark (DTU). The Global Wind Atlas version 4.0 is released in partnership with the World Bank Group, utilizing data provided by Vortex, using funding provided by the Energy Sector Management Assistance Program (ESMAP). For additional information: https://globalwindatlas.info | v3.4 |
+| GSA | 1 × 1 km² | Global horizontal irradiation (GHI) | Global Solar Atlas 2.0, a free, web-based application is developed and operated by the company Solargis s.r.o. on behalf of the World Bank Group, utilizing Solargis data, with funding provided by the Energy Sector Management Assistance Program (ESMAP). For additional information: https://globalsolaratlas.info | v2.12 |
+| HydroLAKES | - | Lakes and water bodies | Messager, M. L., Lehner, B., Grill, G., Nedeva, I., & Schmitt, O. (2016). Estimating the volume and age of water stored in global lakes using a geo-statistical approach. *Nature Communications, 7*, 13603. [https://doi.org/10.1038/ncomms13603](https://doi.org/10.1038/ncomms13603) | v1 |
+
+> **Note:** The WDPA dataset is not included in the Zenodo repository due to licensing restrictions. Users must download the dataset from [Protected Planet](https://www.protectedplanet.net/).
 
 ## Authors
 
